@@ -188,9 +188,10 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,TransientSimulation ) ! {{{
     CALL CalculateLumped(Model % NumberOfBodyForces)
   END IF
 
-  CoordVar => VariableGet(Mesh % Variables,'Coordinates')
   CALL DriveHysteresis(model, solver)
 
+  ! This updates coordinates when using ElmerPost for visualization
+  CoordVar => VariableGet(Mesh % Variables,'Coordinates')
   IF(ASSOCIATED(CoordVar)) THEN
     DO i=1,Mesh % NumberOfNodes
       j = 3*(CoordVar % Perm(i)-1)

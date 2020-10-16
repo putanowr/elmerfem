@@ -18961,21 +18961,27 @@ CONTAINS
   SUBROUTINE GenerateProjectors(Model,Solver,Nonlinear,SteadyState) 
     
      TYPE(Model_t) :: Model
-     TYPE(Solver_t) :: Solver
+     TYPE(Solver_t), TARGET :: Solver
      LOGICAL, OPTIONAL :: Nonlinear, SteadyState
 
      LOGICAL :: IsNonlinear,IsSteadyState,Timing, RequireNonlinear, ContactBC
-     LOGICAL :: ApplyMortar, ApplyContact, Found
+     LOGICAL :: ApplyMortar, ApplyContact, StoreCyclic, Found
      INTEGER :: i,j,k,l,n,dsize,size0,col,row,dim
      TYPE(ValueList_t), POINTER :: BC
      TYPE(Matrix_t), POINTER :: CM, CMP, CM0, CM1
      TYPE(Variable_t), POINTER :: DispVar
      REAL(KIND=dp) :: t0,rt0,rst,st,ct
      CHARACTER(*), PARAMETER :: Caller = 'GenerateProjectors'
-     
+     TYPE(Solver_t), POINTER :: PSolver
+     TYPE(Matrix_t), POINTER :: Proj
+
+          
      ApplyMortar = ListGetLogical(Solver % Values,'Apply Mortar BCs',Found) 
      ApplyContact = ListGetLogical(Solver % Values,'Apply Contact BCs',Found) 
-
+     StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic System', Found)
+     PSolver => Solver
+     
+     
      IF( .NOT. ( ApplyMortar .OR. ApplyContact) ) RETURN
      
      i = ListGetInteger( Solver % Values,'Mortar BC Master Solver',Found ) 
@@ -19030,22 +19036,39 @@ CONTAINS
          IF( RequireNonlinear ) CYCLE
        END IF             
 
-       IF( ASSOCIATED( Solver % MortarBCs(i) % Projector ) ) THEN
+       Proj => Solver % MortarBCs(i) % Projector
+       IF( ASSOCIATED( Proj ) ) THEN
          IF( ListGetLogical( BC,'Mortar BC Static',Found) ) CYCLE         
-         
-         IF( ASSOCIATED( Solver % MortarBCs(i) % Projector % Ematrix ) ) THEN
-           CALL FreeMatrix( Solver % MortarBCs(i) % Projector % Ematrix )
+
+         IF( StoreCyclic ) THEN
+           ! Don't release projectors in case they are cyclic 
+           ! Instead reassign the pointer.
+           CALL StoreCyclicProjector(PSolver,Proj,Found)
+           IF(Found) THEN
+             Solver % MortarBCs(i) % Projector => Proj
+             CYCLE
+           END IF
+         ELSE  
+           IF( ASSOCIATED( Proj % Ematrix ) ) THEN
+             CALL FreeMatrix( Proj % Ematrix )
+           END IF
+           CALL FreeMatrix( Proj ) 
          END IF
-         CALL FreeMatrix( Solver % MortarBCs(i) % Projector )
        END IF
-       
-       Solver % MortarBCs(i) % Projector => &
-           PeriodicProjector(Model,Solver % Mesh,i,j,dim,.TRUE.)
-       
-       IF( ASSOCIATED( Solver % MortarBCs(i) % Projector ) ) THEN
+
+       ! Compute new projector
+       Proj => PeriodicProjector(Model,Solver % Mesh,i,j,dim,.TRUE.)
+
+       Solver % MortarBCs(i) % Projector => Proj       
+       IF( ASSOCIATED( Proj ) ) THEN
          Solver % MortarBCsChanged = .TRUE.
        END IF
 
+       ! Store new projector to the cyclic set
+       IF( StoreCyclic ) THEN
+         CALL StoreCyclicProjector(PSolver,Proj)
+       END IF
+       
      END DO
 
 
@@ -20292,7 +20315,124 @@ CONTAINS
    END SUBROUTINE SolverOutputDirectory
    !-----------------------------------------------------------------------------
  
+   ! When we have a transient and time-periodic system it may be
+   ! beneficial to store the values and use them as an initial guess
+   ! for the next round. This tabulates the system and performs the
+   ! initial guess. Should be called first time when coming to new
+   ! solver for a given steady-state iteration.
+   !-----------------------------------------------------------------------------
+   SUBROUTINE StoreCyclicSolution(Solver)
+     TYPE(Solver_t), POINTER :: Solver     
+     TYPE(Model_t), POINTER :: Model
 
+     LOGICAL :: Found
+     TYPE(Variable_t), POINTER :: v
+     TYPE(Matrix_t), POINTER :: A     
+     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), dx(:)
+     REAL(KIND=dp), POINTER :: x(:)
+     INTEGER :: n, Ncycle, Ntime, Nguess, Nstore
+     LOGICAL :: DoGuess
+          
+     SAVE PeriodicSol, dx
+     
+     Model => CurrentModel 
+
+     v => VariableGet( Solver % Mesh % Variables, 'coupled iter' )     
+     IF( NINT(v % Values(1)) > 1 ) RETURN
+
+     Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
+    
+     v => VariableGet( Solver % Mesh % Variables, 'timestep' )
+     Ntime = NINT(v % Values(1))
+
+     
+     A => Solver % Matrix
+     n = A % NumberOfRows
+
+     IF( Ntime == 1 ) THEN       
+       ! just allocate stuff, nothing to store yet!
+       IF(.NOT. ALLOCATED( PeriodicSol ) ) THEN
+         ALLOCATE( PeriodicSol(n,Ncycle), dx(n) )
+         PeriodicSol = 0.0_dp
+       END IF
+       RETURN
+     END IF
+
+     ! Both should be in [1,Ncycle]
+     Nstore = MODULO( Ntime-2,Ncycle)+1
+     Nguess = MODULO( Ntime-1,Ncycle)+1              
+     DoGuess = ( Ntime > Ncycle + 1 ) 
+     
+     IF( DoGuess ) THEN
+       dx = PeriodicSol(:,Nguess)-PeriodicSol(:,Nstore)
+     END IF
+     
+     x => Solver % Variable % Values 
+     PeriodicSol(:,Nstore) = x
+     
+     IF( DoGuess ) THEN
+       x = x + dx
+     END IF
+     
+   END SUBROUTINE StoreCyclicSolution
+   
+
+   !----------------------------------------------------------------------
+   !> This subroutine saves a projector assuming time-periodic system.
+   !> There are two operation modes.
+   !> a) Fetching a precomputed projector when GotProj argument is provided.
+   !> b) Storing a projector when no GotProj argument is provided. 
+   !----------------------------------------------------------------------
+   SUBROUTINE StoreCyclicProjector(Solver,Proj,GotProj)
+     TYPE ProjTable_t
+       TYPE(Matrix_t), POINTER :: Proj
+     END TYPE ProjTable_t
+     TYPE(Solver_t), POINTER :: Solver
+     TYPE(Matrix_t), POINTER :: Proj
+     LOGICAL, OPTIONAL :: GotProj
+     
+     TYPE(Variable_t), POINTER :: v
+     TYPE(Matrix_t), POINTER :: A     
+     TYPE(Model_t), POINTER :: Model
+     LOGICAL :: Found
+     TYPE(ProjTable_t), POINTER :: ProjTable(:)
+     INTEGER :: n, i, Ncycle, Ntime, Nstore
+          
+     SAVE ProjTable
+     
+     Model => CurrentModel 
+     Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
+    
+     v => VariableGet( Solver % Mesh % Variables, 'timestep' )
+     Ntime = NINT(v % Values(1))
+
+     A => Solver % Matrix
+     n = A % NumberOfRows
+
+     ! allocate space for projectors 
+     IF(.NOT. ASSOCIATED( ProjTable ) ) THEN
+       ALLOCATE( ProjTable(Ncycle) )
+       DO i=1,Ncycle
+         ProjTable(i) % Proj => NULL()
+       END DO
+     END IF
+
+     Nstore = MODULO( Ntime-1,Ncycle)+1
+     
+     IF( PRESENT( GotProj ) ) THEN
+       IF( Ntime <= Ncycle ) THEN
+         Proj => NULL()
+       ELSE
+         Proj => ProjTable(Nstore) % Proj
+       END IF
+       GotProj = ASSOCIATED( Proj ) 
+     ELSE
+       ProjTable(Nstore) % Proj => Proj
+     END IF
+
+   END SUBROUTINE StoreCyclicProjector
+
+   
 END MODULE SolverUtils
 
 !> \}
