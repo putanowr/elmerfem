@@ -2012,6 +2012,9 @@ SUBROUTINE Bsolver( Model,Solver,dt,Transient )
   
   SAVE Visited
 
+  CALL Warn('BSolver','This module is obsolete! USE MagnetoDynamicsCalcFields instead')
+
+  
   CALL Info( 'BSolver', '-------------------------------------',Level=4 )
   CALL Info( 'BSolver', 'Computing the magnetic field density ',Level=4 )
   CALL Info( 'BSolver', '-------------------------------------',Level=4 )
