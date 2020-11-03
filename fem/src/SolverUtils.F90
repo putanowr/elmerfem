@@ -15388,6 +15388,7 @@ RECURSIVE SUBROUTINE SolveWithLinearRestriction( StiffMatrix, ForceVector, Solut
      MultiplierValues => MultVar % Values
 
      IF (j>SIZE(MultiplierValues)) THEN
+       CALL Info(Caller,'Increasing Lagrange multiplier size to: '//TRIM(I2S(j)),Level=8)
        ALLOCATE(MultiplierValues(j)); MultiplierValues=0._dp
        MultiplierValues(1:SIZE(MultVar % Values)) = MultVar % Values
        DEALLOCATE(MultVar % Values)
@@ -18965,7 +18966,7 @@ CONTAINS
      LOGICAL, OPTIONAL :: Nonlinear, SteadyState
 
      LOGICAL :: IsNonlinear,IsSteadyState,Timing, RequireNonlinear, ContactBC
-     LOGICAL :: ApplyMortar, ApplyContact, StoreCyclic, Found
+     LOGICAL :: ApplyMortar, ApplyContact, StoreCyclic, Found, StaticProj
      INTEGER :: i,j,k,l,n,dsize,size0,col,row,dim
      TYPE(ValueList_t), POINTER :: BC
      TYPE(Matrix_t), POINTER :: CM, CMP, CM0, CM1
@@ -18978,7 +18979,7 @@ CONTAINS
           
      ApplyMortar = ListGetLogical(Solver % Values,'Apply Mortar BCs',Found) 
      ApplyContact = ListGetLogical(Solver % Values,'Apply Contact BCs',Found) 
-     StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic System', Found)
+     StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic Projector', Found)
      PSolver => Solver
      
      
@@ -19024,7 +19025,7 @@ CONTAINS
          ContactBC = Found
        END IF
        IF( .NOT. Found ) CYCLE
-
+              
        RequireNonlinear = ListGetLogical( BC,'Mortar BC Nonlinear',Found)
        IF( .NOT. Found ) THEN
          RequireNonlinear = ContactBC .AND. .NOT. ListGetLogical( BC,'Tie Contact',Found )
@@ -19036,9 +19037,11 @@ CONTAINS
          IF( RequireNonlinear ) CYCLE
        END IF             
 
+       StaticProj = ListGetLogical( BC,'Mortar BC Static',Found)
+       
        Proj => Solver % MortarBCs(i) % Projector
        IF( ASSOCIATED( Proj ) ) THEN
-         IF( ListGetLogical( BC,'Mortar BC Static',Found) ) CYCLE         
+         IF( StaticProj ) CYCLE         
 
          IF( StoreCyclic ) THEN
            ! Don't release projectors in case they are cyclic 
@@ -19046,6 +19049,7 @@ CONTAINS
            CALL StoreCyclicProjector(PSolver,Proj,Found)
            IF(Found) THEN
              Solver % MortarBCs(i) % Projector => Proj
+             Solver % MortarBCsChanged = .TRUE.
              CYCLE
            END IF
          ELSE  
@@ -19066,7 +19070,7 @@ CONTAINS
 
        ! Store new projector to the cyclic set
        IF( StoreCyclic ) THEN
-         CALL StoreCyclicProjector(PSolver,Proj)
+         IF(.NOT. StaticProj ) CALL StoreCyclicProjector(PSolver,Proj)
        END IF
        
      END DO
@@ -19343,6 +19347,7 @@ CONTAINS
 
          IF(.NOT. AllocationsDone ) THEN
            CALL Info(Caller,'Adding projector for BC: '//TRIM(I2S(bc_ind)),Level=8)
+           CALL Info(Caller,'Adding projector rows: '//TRIM(I2S(Atmp % NumberOfRows)),Level=12)
          END IF
            
          IF( .NOT. ASSOCIATED( Atmp % InvPerm ) ) THEN
@@ -20328,12 +20333,14 @@ CONTAINS
      LOGICAL :: Found
      TYPE(Variable_t), POINTER :: v
      TYPE(Matrix_t), POINTER :: A     
-     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), dx(:)
-     REAL(KIND=dp), POINTER :: x(:)
-     INTEGER :: n, Ncycle, Ntime, Nguess, Nstore
-     LOGICAL :: DoGuess
-          
-     SAVE PeriodicSol, dx
+     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), PeriodicMult(:,:), dx(:), dy(:)
+     REAL(KIND=dp), POINTER :: x(:), y(:)
+     INTEGER :: n, m, Ncycle, Ntime, Nguess, Nstore, GuessMode
+     LOGICAL :: DoGuess, ExportMult
+     TYPE(Variable_t), POINTER :: Var
+     CHARACTER(LEN=MAX_NAME_LEN) :: MultName
+     
+     SAVE PeriodicSol, dx, PeriodicMult, dy
      
      Model => CurrentModel 
 
@@ -20345,33 +20352,81 @@ CONTAINS
      v => VariableGet( Solver % Mesh % Variables, 'timestep' )
      Ntime = NINT(v % Values(1))
 
+     IF( Ntime == 1 ) THEN
+       ! Nothing to do before solution exists
+       RETURN
+     END IF
+     
      
      A => Solver % Matrix
      n = A % NumberOfRows
 
-     IF( Ntime == 1 ) THEN       
-       ! just allocate stuff, nothing to store yet!
+     x => Solver % Variable % Values 
+
+     
+     GuessMode = ListGetInteger( Solver % Values,'Cyclic Guess Mode',Found ) 
+     
+     ExportMult = ListGetLogical( Solver % Values, 'Export Lagrange Multiplier', Found )     
+     IF ( ExportMult ) THEN
+       MultName = ListGetString( Solver % Values, 'Lagrange Multiplier Name', Found )
+       IF ( .NOT. Found ) MultName = "LagrangeMultiplier"
+       Var => VariableGet(Solver % Mesh % Variables, MultName)
+       ExportMult = ASSOCIATED( Var ) 
+       IF( ExportMult ) THEN
+         y => Var % Values
+         m = SIZE( y )
+       END IF
+     END IF
+     
+     
+     IF( Ntime == 2 ) THEN       
+       ! allocate stuff to save vectors
        IF(.NOT. ALLOCATED( PeriodicSol ) ) THEN
+         CALL Info('StoreCyclicSolution','Allocating for periodic solver values',Level=6)
          ALLOCATE( PeriodicSol(n,Ncycle), dx(n) )
          PeriodicSol = 0.0_dp
+
+         IF( ExportMult ) THEN
+           CALL Info('StoreCyclicSolution','Allocating for periodic Lagrange values',Level=6)
+           ALLOCATE( PeriodicMult(m,Ncycle), dy(m) )
+           PeriodicMult = 0.0_dp
+         END IF         
        END IF
-       RETURN
      END IF
 
      ! Both should be in [1,Ncycle]
      Nstore = MODULO( Ntime-2,Ncycle)+1
      Nguess = MODULO( Ntime-1,Ncycle)+1              
-     DoGuess = ( Ntime > Ncycle + 1 ) 
-     
+     DoGuess = ( Ntime > Ncycle + 1 )        
+
+     ! Perform guess only when there is enough data
      IF( DoGuess ) THEN
-       dx = PeriodicSol(:,Nguess)-PeriodicSol(:,Nstore)
+       IF( GuessMode == 0 ) THEN
+         dx = PeriodicSol(:,Nguess)-PeriodicSol(:,Nstore)
+         IF( ExportMult ) THEN
+           dy = PeriodicMult(:,Nguess)-PeriodicMult(:,Nstore)
+         END IF
+       END IF
+     END IF       
+     
+     PeriodicSol(:,Nstore) = x
+
+     IF( ExportMult ) THEN
+       PeriodicMult(:,Nstore) = y
      END IF
      
-     x => Solver % Variable % Values 
-     PeriodicSol(:,Nstore) = x
-     
      IF( DoGuess ) THEN
-       x = x + dx
+       IF( GuessMode == 0 ) THEN
+         x = x + dx
+         IF( ExportMult ) THEN
+           y = y + dy 
+         END IF
+       ELSE
+         x = PeriodicSol(:,Nguess)
+         IF( ExportMult ) THEN
+           y = PeriodicMult(:,Nguess)
+         END IF
+       END IF
      END IF
      
    END SUBROUTINE StoreCyclicSolution
@@ -20397,7 +20452,8 @@ CONTAINS
      LOGICAL :: Found
      TYPE(ProjTable_t), POINTER :: ProjTable(:)
      INTEGER :: n, i, Ncycle, Ntime, Nstore
-          
+     LOGICAL :: SetProj
+     
      SAVE ProjTable
      
      Model => CurrentModel 
@@ -20417,19 +20473,25 @@ CONTAINS
        END DO
      END IF
 
+     ! Nstrore in [1,Ncycle]
      Nstore = MODULO( Ntime-1,Ncycle)+1
-     
+
      IF( PRESENT( GotProj ) ) THEN
+       ! getting projector
        IF( Ntime <= Ncycle ) THEN
          Proj => NULL()
        ELSE
          Proj => ProjTable(Nstore) % Proj
        END IF
        GotProj = ASSOCIATED( Proj ) 
+       PRINT *,'Getting projector:',GotProj,Ntime,Nstore,Ncycle,ASSOCIATED(Proj)
      ELSE
-       ProjTable(Nstore) % Proj => Proj
+       ! storing projector
+       SetProj = .NOT. ASSOCIATED( ProjTable(Nstore) % Proj )       
+       IF( SetProj ) ProjTable(Nstore) % Proj => Proj
+       PRINT *,'Setting projector:',SetProj,Ntime,Nstore,Ncycle,ASSOCIATED(Proj)
      END IF
-
+         
    END SUBROUTINE StoreCyclicProjector
 
    
