@@ -118,7 +118,6 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,TransientSimulation ) ! {{{
   SolverParams => GetSolverParams()
   
   NewtonRaphson = GetLogical(SolverParams, 'Newton-Raphson Iteration', Found)
-  IF(.NOT. Found) NewtonRaphson = .FALSE.
   IF(GetCoupledIter()>1) NewtonRaphson = .TRUE.
 
   NonlinIter = GetInteger(SolverParams, &
@@ -454,7 +453,7 @@ CONTAINS
     INTEGER :: i,p,q,t,siz
 
     LOGICAL :: Cubic, HBcurve, WithVelocity, Found, Stat
-    LOGICAL :: CoilBody    
+    LOGICAL :: CoilBody, StrandedCoil    
 
 !$omp threadprivate(Nodes, CubicCoeff, HB)
     CHARACTER(LEN=MAX_NAME_LEN) :: CoilType
@@ -530,6 +529,29 @@ CONTAINS
       CALL GetRealVector(BodyForce, Lorentz_velo, 'Lorentz velocity', WithVelocity)
     END IF
 
+    CoilBody = .FALSE.
+    StrandedCoil = .FALSE.
+    CompParams => GetComponentParams( Element )
+    IF (ASSOCIATED(CompParams)) THEN
+      CoilType = GetString(CompParams, 'Coil Type', Found)
+      IF (Found) THEN
+        SELECT CASE (CoilType)
+        CASE ('stranded')
+          CoilBody = .TRUE.
+          StrandedCoil = .TRUE.
+        CASE ('massive')
+          CoilBody = .TRUE.
+        CASE ('foil winding')
+          CoilBody = .TRUE.
+          !         CALL GetElementRotM(Element, RotM, n)
+        CASE DEFAULT
+          CALL Fatal ('MagnetoDynamics2D', 'Non existent Coil Type Chosen!')
+        END SELECT
+      END IF
+    END IF
+
+
+    
     !Numerical integration:
     !----------------------
     IP = GaussPoints(Element)
@@ -550,7 +572,7 @@ CONTAINS
 
       nu_tensor = 0.0_dp
 
-      if(Zirka .or. HBCUrve) then
+      IF(Zirka .OR. HBCUrve) THEN
         Agrad = 0.0_dp
         Agrad = MATMUL( POT,dBasisdx )
         Alocal = SUM( POT(1:n) * Basis(1:n) )
@@ -558,11 +580,11 @@ CONTAINS
         ! -----
         B_ip(1) = Agrad(2) 
         B_ip(2) = -Agrad(1)
-        IF( CSymmetry ) then
+        IF( CSymmetry ) THEN
           B_ip = -B_ip
           B_ip(2) = B_ip(2) + Alocal/x
-        end if
-      end if
+        END IF
+      END IF
 
       IF (HBcurve ) THEN
         ! -----
@@ -572,7 +594,7 @@ CONTAINS
         nu_tensor(1,1) = mu ! Mu is really nu!!! too lazy to correct now...
         nu_tensor(2,2) = mu
       ELSEIF(Zirka) THEN
-        call GetZirkaHBAtIP(t, solver, element, hystvar, zirkamodel, B_ip, H_ip, nu_tensor)
+        CALL GetZirkaHBAtIP(t, solver, element, hystvar, zirkamodel, B_ip, H_ip, nu_tensor)
       ELSE
         muder=0._dp
         DO p=1,2
@@ -582,34 +604,13 @@ CONTAINS
         END DO
       END IF
 
-
-      CoilBody = .FALSE.
-      CompParams => GetComponentParams( Element )
-      CoilType = ''
-      IF (ASSOCIATED(CompParams)) THEN
-        CoilType = GetString(CompParams, 'Coil Type', Found)
-        IF (Found) THEN
-          SELECT CASE (CoilType)
-          CASE ('stranded')
-             CoilBody = .TRUE.
-          CASE ('massive')
-             CoilBody = .TRUE.
-          CASE ('foil winding')
-             CoilBody = .TRUE.
-    !         CALL GetElementRotM(Element, RotM, n)
-          CASE DEFAULT
-             CALL Fatal ('MagnetoDynamics2D', 'Non existent Coil Type Chosen!')
-          END SELECT
-        END IF
-      END IF
-
       C_ip = SUM( Basis(1:n) * C(1:n) )
       M_ip = MATMUL( M,Basis(1:n) )
 
 
       ! Finally, the elemental matrix & vector:
       !----------------------------------------
-      IF (TransientSimulation .AND. C_ip/=0._dp .AND. CoilType /= 'stranded') THEN
+      IF (TransientSimulation .AND. C_ip/=0._dp .AND. .NOT. StrandedCoil ) THEN
         DO p=1,nd
           DO q=1,nd
             MASS(p,q) = MASS(p,q) + IP % s(t) * detJ * C_ip * Basis(q)*Basis(p)
@@ -621,10 +622,10 @@ CONTAINS
       !---------------------
       Bt(:,1) =  dbasisdx(:,2)
       Bt(:,2) = -dbasisdx(:,1)
-      IF ( CSymmetry ) then
+      IF ( CSymmetry ) THEN
         Bt(:,1:2) = -Bt(:,1:2)
         Bt(:,2) = Bt(:,2) + Basis(:)/x
-      end if
+      END IF
 
       DO p = 1,nd
         Ht(p,:) = MATMUL(nu_tensor, Bt(p,:))
@@ -717,25 +718,26 @@ SUBROUTINE GetZirkaHBAtIP(i_IP, Solver, Element, HystVar, ZirkaModel, B_ip, H_ip
   REAL(KIND=dp) :: dH, B0(3)
 !-------------------------------------------------------------------------------
   ipindex = getipindex(i_IP, usolver=solver, element=element, ipvar=hystvar)
-  IF (ipindex /= 0 ) THEN
+  IF (ipindex == 0 ) RETURN
+
   H_ip = 0.0_dp
-    Do n_dir = 1, ubound(zirkamodel % curves, 1)
-      B0 = zirkamodel % curves(n_dir, ipindex) % B0
-      associate(Bdir => sum(B_ip*B0(1:2)))
-        ! H_ip(1:2) = H_ip(1:2) + zirkamodel % curves(n_dir,ipindex) % &
-        !     eval(sum(B_ip*B0(1:2)), cached = .true., dhdb=dH) * &
-        !     B0(1:2)
-        H_ip(1:2) = H_ip(1:2) + zirkamodel % curves(n_dir,ipindex) % &
-            eval(Bdir, cached = .true., dhdb=dH) * &
-            B0(1:2)
-      end associate
-      DO k = 1,2
-        DO l = 1,2
-          dHdB(k,l) = dHdB(k,l) + dH*B0(k)*B0(l)
-        END DO
+  DO n_dir = 1, UBOUND(zirkamodel % curves, 1)
+    B0 = zirkamodel % curves(n_dir, ipindex) % B0
+    ASSOCIATE(Bdir => SUM(B_ip*B0(1:2)))
+      ! H_ip(1:2) = H_ip(1:2) + zirkamodel % curves(n_dir,ipindex) % &
+      !     eval(sum(B_ip*B0(1:2)), cached = .true., dhdb=dH) * &
+      !     B0(1:2)
+      H_ip(1:2) = H_ip(1:2) + zirkamodel % curves(n_dir,ipindex) % &
+          eval(Bdir, cached = .TRUE., dhdb=dH) * &
+          B0(1:2)
+    END ASSOCIATE
+    DO k = 1,2
+      DO l = 1,2
+        dHdB(k,l) = dHdB(k,l) + dH*B0(k)*B0(l)
       END DO
     END DO
-  END IF
+  END DO
+  
 END SUBROUTINE ! }}}
 !-------------------------------------------------------------------------------
 
@@ -780,7 +782,6 @@ END SUBROUTINE ! }}}
       !--------------------------------------------------------------
       stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
                  IP % W(t), detJ, Basis )
-
 
       mu = SUM(Basis(1:n)*R(1,1,1:n)) ! We assume isotropic reluctivity here.
 
@@ -882,32 +883,26 @@ END SUBROUTINE ! }}}
     Perm => Solver % Variable % Perm
     A => Solver % Matrix
     b => A % RHS
+    
     DO i=1,GetNofBoundaryElements()
       Element => GetBoundaryElement(i)
       n = GetELementNofNodes()
       BC => GetBC()
       IF ( ASSOCIATED(BC)) THEN
-        IF ( ListCheckPresent( BC, 'Magnetic Flux Density 1') .OR. &
-             ListCheckPresent( BC, 'Magnetic Flux Density 2')      &
-            ) THEN
+        IF ( ListCheckPrefix( BC, 'Magnetic Flux Density') ) THEN
           Bx = 0._dp
           By = 0._dp
 
           Bx(1:n) = GetReal(BC, 'Magnetic Flux Density 1', Found)
-          IF (.NOT. Found) Bx = 0._dp
           By(1:n) = GetReal(BC, 'Magnetic Flux Density 2', Found)
-          IF (.NOT. Found) By = 0._dp
+
           DO j = 1,n
             k = Element % NodeIndexes(j)
             x = Mesh % Nodes % x(k)
             y = Mesh % Nodes % y(k)
             k = Perm(k)
-            !b(k) = y * Bx(j) - x * By(j)
 
             CALL UpdateDirichletDof( A, k, y * Bx(j) - x * By(j) )
-
-            !CALL ZeroRow(A, k)
-            !CALL AddToMatrixElement(A, k, k, 1._dp)
           END DO 
         END IF  
       END IF  
@@ -1347,7 +1342,6 @@ CONTAINS
       BrRe = REAL( Br ); BrIm = AIMAG( Br )
       BpRe = REAL( Bp ); BpIm = AIMAG( Bp )
 
-
       U = U + IP % s(t)*detJ*r*(BrRe*BpRe+BrIm*BpIm)/(2*PI*4.0d-7*(r1-r0))
       Area = Area + IP % s(t)*detJ
     END DO
@@ -1384,7 +1378,7 @@ CONTAINS
       ! Basis function values & derivatives at the integration point:
       !--------------------------------------------------------------
       stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
-                IP % W(t), detJ, Basis )
+          IP % W(t), detJ, Basis )
       A = A + IP % s(t) * detJ
       U = U + IP % s(t) * detJ * im*Omega*SUM(POTC*Basis)
     END DO
@@ -1428,7 +1422,7 @@ CONTAINS
     LOGICAL :: Cubic, HBcurve, Found, Stat, StrandedHomogenization
     LOGICAL :: CoilBody    
     LOGICAL :: InPlaneProximity = .FALSE., WithVelocity
-    LOGICAL :: FoundIm
+    LOGICAL :: FoundIm, StrandedCoil
     
     CHARACTER(LEN=MAX_NAME_LEN) :: CoilType
 
@@ -1448,45 +1442,46 @@ CONTAINS
     
     CoilBody = .FALSE.
     CompParams => GetComponentParams( Element )
-    CoilType = ''
     StrandedHomogenization = .FALSE.
+    StrandedCoil = .FALSE.
+    
     IF (ASSOCIATED(CompParams)) THEN
       CoilType = GetString(CompParams, 'Coil Type', Found)
       IF (Found) THEN
         SELECT CASE (CoilType)
         CASE ('stranded')
-           CoilBody = .TRUE.
-           StrandedHomogenization = GetLogical(CompParams, 'Homogenization Model', Found)
-           IF ( .NOT. Found ) StrandedHomogenization = .FALSE.
-             
-           IF ( StrandedHomogenization ) THEN
-             nu_11 = 0._dp
-             nuim_11 = 0._dp
-             nu_11 = GetReal(CompParams, 'nu 11', Found)
-             nuim_11 = GetReal(CompParams, 'nu 11 im', FoundIm)
-             IF ( .NOT. Found .AND. .NOT. FoundIm ) CALL Fatal ('LocalMatrix', 'Homogenization Model nu 11 not found!')
-             nu_22 = 0._dp
-             nuim_22 = 0._dp
-             nu_22 = GetReal(CompParams, 'nu 22', Found)
-             nuim_22 = GetReal(CompParams, 'nu 22 im', FoundIm)
-             IF ( .NOT. Found .AND. .NOT. FoundIm ) CALL Fatal ('LocalMatrix', 'Homogenization Model nu 22 not found!')
-           END IF
+          CoilBody = .TRUE.
+          StrandedCoil = .TRUE.
+          StrandedHomogenization = GetLogical(CompParams, 'Homogenization Model', Found)
+
+          IF ( StrandedHomogenization ) THEN
+            nu_11 = 0._dp
+            nuim_11 = 0._dp
+            nu_11 = GetReal(CompParams, 'nu 11', Found)
+            nuim_11 = GetReal(CompParams, 'nu 11 im', FoundIm)
+            IF ( .NOT. Found .AND. .NOT. FoundIm ) CALL Fatal ('LocalMatrix', 'Homogenization Model nu 11 not found!')
+            nu_22 = 0._dp
+            nuim_22 = 0._dp
+            nu_22 = GetReal(CompParams, 'nu 22', Found)
+            nuim_22 = GetReal(CompParams, 'nu 22 im', FoundIm)
+            IF ( .NOT. Found .AND. .NOT. FoundIm ) CALL Fatal ('LocalMatrix', 'Homogenization Model nu 22 not found!')
+          END IF
 
         CASE ('massive')
-           CoilBody = .TRUE.
+          CoilBody = .TRUE.
         CASE ('foil winding')
-           CoilBody = .TRUE.
+          CoilBody = .TRUE.
   !         CALL GetElementRotM(Element, RotM, n)
-           InPlaneProximity = GetLogical(CompParams, 'Foil In Plane Proximity', Found)
-           IF (InPlaneProximity) THEN
-             coilthickness = GetConstReal(CompParams, 'Coil Thickness', Found)
-             IF (.NOT. Found ) Call Fatal('LocalMatrix', 'Coil Thickness not found!')
-             nofturns = GetConstReal(CompParams, 'Number Of Turns', Found)
-             IF (.NOT. Found ) Call Fatal('LocalMatrix', 'Number of Turns not found!')
-             foilthickness = coilthickness/nofturns
-           END IF
+          InPlaneProximity = GetLogical(CompParams, 'Foil In Plane Proximity', Found)
+          IF (InPlaneProximity) THEN
+            coilthickness = GetConstReal(CompParams, 'Coil Thickness', Found)
+            IF (.NOT. Found ) Call Fatal('LocalMatrix', 'Coil Thickness not found!')
+            nofturns = GetConstReal(CompParams, 'Number Of Turns', Found)
+            IF (.NOT. Found ) Call Fatal('LocalMatrix', 'Number of Turns not found!')
+            foilthickness = coilthickness/nofturns
+          END IF
         CASE DEFAULT
-           CALL Fatal ('MagnetoDynamics2DHarmonic', 'Non existent Coil Type Chosen!')
+          CALL Fatal ('MagnetoDynamics2DHarmonic', 'Non existent Coil Type Chosen!')
         END SELECT
       END IF
     END IF
@@ -1500,7 +1495,7 @@ CONTAINS
         Bval=>HB(:,1)
         Hval=>HB(:,2)
         Cubic = GetLogical( Material, 'Cubic spline for H-B curve',Found)
-        IF (Cubic.AND..NOT.ASSOCIATED(CubicCoeff)) THEN
+        IF (Cubic .AND. .NOT. ASSOCIATED(CubicCoeff)) THEN
           ALLOCATE(CubicCoeff(siz))
           CALL CubicSpline(siz,Bval,Hval,CubicCoeff)
         END IF
@@ -1508,7 +1503,7 @@ CONTAINS
         HBCurve = .TRUE.
       END IF
     END IF
-
+    
     IF(siz<=1) THEN
       Lst => ListFind(Material,'H-B Curve',HBcurve)
       IF(HBcurve) THEN
@@ -1601,7 +1596,7 @@ CONTAINS
       C_ip = SUM( Basis(1:n) * C(1:n) )
       M_ip = MATMUL( M,Basis(1:n) )
 
-      IF(CoilType /= 'stranded') THEN
+      IF(.NOT. StrandedCoil ) THEN
         DO p=1,nd
           DO q=1,nd
             STIFF(p,q) = STIFF(p,q) + &
@@ -1781,10 +1776,10 @@ CONTAINS
     FORCE = 0._dp
 
     AirGapLength=GetConstReal( BC, 'Air Gap Length', Found)
-    if (.not. Found) CALL FATAL('LocalMatrixAirGapBC', 'Air Gap Length not found!')
+    IF (.NOT. Found) CALL Fatal('LocalMatrixAirGapBC', 'Air Gap Length not found!')
 
     AirGapMu=GetConstReal( BC, 'Air Gap Relative Permeability', Found)
-    if (.not. Found) AirGapMu=1d0
+    IF (.NOT. Found) AirGapMu=1.0_dp
 
     !Numerical integration:
     !----------------------
@@ -1798,9 +1793,9 @@ CONTAINS
       mu = 4*pi*1d-7*SUM(Basis(1:n)*AirGapMu(1:n))
       AirGapL = SUM(Basis(1:n)*AirGapLength(1:n))
 
-        STIFF(1:nd,1:nd) = STIFF(1:nd,1:nd) + IP % s(t) * DetJ * &
-             AirGapL/mu*MATMUL(dBasisdx, TRANSPOSE(dBasisdx))
-
+      STIFF(1:nd,1:nd) = STIFF(1:nd,1:nd) + IP % s(t) * DetJ * &
+          AirGapL/mu*MATMUL(dBasisdx, TRANSPOSE(dBasisdx))
+      
     END DO
     CALL DefaultUpdateEquations( STIFF, FORCE, UElement=Element )
 !------------------------------------------------------------------------------
@@ -1837,38 +1832,25 @@ CONTAINS
       n = GetELementNofNodes()
       BC => GetBC()
       IF ( ASSOCIATED(BC)) THEN
-        IF ( ListCheckPresent( BC, 'Magnetic Flux Density 1') .OR. &
-             ListCheckPresent( BC, 'Magnetic Flux Density 1 im') .OR. &
-             ListCheckPresent( BC, 'Magnetic Flux Density 2') .OR. &
-             ListCheckPresent( BC, 'Magnetic Flux Density 2 im') &
-            ) THEN
+        IF ( ListCheckPrefix( BC, 'Magnetic Flux Density') ) THEN
           Bx = 0._dp
           Bxim = 0._dp
           By = 0._dp
           Byim = 0._dp
 
           Bx(1:n) = GetReal(BC, 'Magnetic Flux Density 1', Found)
-          IF (.NOT. Found) Bx = 0._dp
           Bxim(1:n) = GetReal(BC, 'Magnetic Flux Density 1 im', Found)
-          IF (.NOT. Found) Bxim = 0._dp
           By(1:n) = GetReal(BC, 'Magnetic Flux Density 2', Found)
-          IF (.NOT. Found) By = 0._dp
           Byim(1:n) = GetReal(BC, 'Magnetic Flux Density 2 im', Found)
-          IF (.NOT. Found) Byim = 0._dp
+
           DO j = 1,n
             k = Element % NodeIndexes(j)
             x = Mesh % Nodes % x(k)
             y = Mesh % Nodes % y(k)
             k = Perm(k)
-            !b(2*k-1) = y * Bx(j) - x * By(j)
-            !b(2*k) = y * Bxim(j) - x * Byim(j)
 
             CALL UpdateDirichletDof( A, 2*k-1, y * Bx(j) - x * By(j) )
             CALL UpdateDirichletDof( A, 2*k, y * Bxim(j) - x * Byim(j) )
-
-            !CALL ZeroRow(A, 2*k-1)
-            !CALL ZeroRow(A, 2*k)
-            !CALL AddToCmplxMatrixElement(A, 2*k-1, 2*k-1, 1._dp, 0._dp)
           END DO 
         END IF  
       END IF  
@@ -2207,7 +2189,7 @@ CONTAINS
     REAL(KIND=DP) :: Vol
     CHARACTER(LEN=MAX_NAME_LEN) :: CompNumber, OutputComp
     
-    LOGICAL :: StrandedHomogenization, FoundIm
+    LOGICAL :: StrandedHomogenization, FoundIm, StrandedCoil 
 
     REAL(KIND=dp), ALLOCATABLE :: sigma_33(:), sigmaim_33(:)
     REAL(KIND=dp), ALLOCATABLE :: CoreLossUDF(:)
@@ -2336,18 +2318,21 @@ CONTAINS
       nd = GetElementNOFDOFs()
       n  = GetElementNOFNodes()
       
-      CoilType = ''
       CompParams => GetComponentParams( Element )
       StrandedHomogenization = .FALSE.
       InPlaneProximity = .FALSE.
       LaminateModelPowerCompute = .FALSE.
+      StrandedCoil = .FALSE.
+      CoilType = ''
+      
       IF (ASSOCIATED(CompParams)) THEN    
         CoilType = GetString(CompParams, 'Coil Type', Found)
         
         SELECT CASE (CoilType)
         CASE ('stranded')
           CoilBody = .TRUE.
- 
+          StrandedCoil = .TRUE.
+          
           IvarId = GetInteger (CompParams, 'Circuit Current Variable Id', Found)
           IF (.NOT. Found) CALL Fatal ('MagnetoDynamicsCalcFields', 'Circuit Current Variable Id not found!')
  
@@ -2537,12 +2522,11 @@ CONTAINS
           END IF
           CondAtIp = ValAtIp + im * ValAtIpim
                                                          
-          IF (CoilType /= 'stranded') THEN
+          IF (.NOT. StrandedCoil ) THEN
             PotAtIp(1) =   Omega * SUM(POT(2,1:nd) * Basis(1:nd))
             PotAtIp(2) = - Omega * SUM(POT(1,1:nd) * Basis(1:nd))
           ELSE
-            PotAtIp(1) = 0._dp
-            PotAtIp(2) = 0._dp
+            PotAtIp = 0._dp
           END IF
 
           localV=0._dp
