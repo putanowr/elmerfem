@@ -597,7 +597,8 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    REAL(KIND=dp) :: line_tangent(3)
    INTEGER :: IOUnit, pIndex
    REAL(KIND=dp) :: SaveNorm
-   INTEGER :: NormIndex
+   INTEGER :: NormIndex, fielddim
+   LOGICAL :: ConstantMassMatrixInUse = .FALSE.
    
    INTEGER, POINTER, SAVE :: SetPerm(:) => NULL()
 !-------------------------------------------------------------------------------------------
@@ -607,6 +608,9 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    CALL Info('MagnetoDynamicsCalcFields','Computing postprocessed fields',Level=5)
    
    dim = CoordinateSystemDimension()
+   fielddim = 3
+
+
    SolverParams => GetSolverParams()
 
    ! This is a hack to be able to control the norm that is tested for
@@ -821,8 +825,10 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    Magnetization = 0._dp
 
    Power = 0._dp; Energy = 0._dp
-   CALL DefaultInitialize()
-   
+   IF(.NOT. ConstantMassMatrixInUse ) THEN
+     CALL DefaultInitialize()
+   END IF
+
    
    DO i = 1, GetNOFActive()
      Element => GetActiveElement(i)
@@ -1097,9 +1103,10 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
             B(k,:) = MATMUL( SOL(k,np+1:nd), RotWBasis(1:nd-np,:) )
          END SELECT
        END DO
-       IF(ImposeCircuitCurrent .and. ItoJCoeffFound) THEN
+       
+       IF(ImposeCircuitCurrent .AND. ItoJCoeffFound) THEN
          wvec = -MATMUL(Wbase(1:n), dBasisdx(1:n,:))
-         IF(SUM(wvec**2._dp) .GE. AEPS) THEN
+         IF(SUM(wvec**2._dp) > AEPS) THEN
            wvec = wvec/SQRT(SUM(wvec**2._dp))
          ELSE
            wvec = [0.0_dp, 0.0_dp, 1.0_dp]
@@ -1741,7 +1748,9 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
 
 
      IF(NodalFields) THEN
-       CALL DefaultUpdateEquations( MASS,Force(:,1))
+       IF(.NOT. ConstantMassMatrixInUse ) THEN
+         CALL DefaultUpdateEquations( MASS,Force(:,1))
+       END IF
        Fsave => Solver % Matrix % RHS
        DO l=1,k
          Solver % Matrix % RHS => GForce(:,l)
@@ -1773,13 +1782,14 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    
    ! Assembly of the face terms:
    !----------------------------
-   IF (GetLogical(SolverParams,'Discontinuous Galerkin',Found)) THEN
-     IF (GetLogical(SolverParams,'Average Within Materials',Found)) THEN
-       FORCE = 0.0_dp
-       CALL AddLocalFaceTerms( MASS, FORCE(:,1) )
+   IF(.NOT. ConstantMassMatrixInUse ) THEN
+     IF (GetLogical(SolverParams,'Discontinuous Galerkin',Found)) THEN
+       IF (GetLogical(SolverParams,'Average Within Materials',Found)) THEN
+         FORCE = 0.0_dp
+         CALL AddLocalFaceTerms( MASS, FORCE(:,1) )
+       END IF
      END IF
    END IF
-
    
    IF(NodalFields) THEN
      Fsave => Solver % Matrix % RHS
@@ -2348,6 +2358,12 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
     Solver % Variable % Norm = SaveNorm
   END IF
 
+
+  IF(.NOT. ConstantMassMatrixInUse ) THEN
+    ConstantMassMatrixInUse = ListGetLogical( SolverParams,'Constant Mass Matrix',Found )    
+  END IF
+    
+  
 CONTAINS
 
 !-------------------------------------------------------------------
@@ -2860,6 +2876,11 @@ CONTAINS
    
    DO i=1,m
      dofs = dofs+1
+
+     IF(fielddim == 2) THEN
+       IF( i==3 .OR. i==6 ) CYCLE
+     END IF
+     
      Solver % Matrix % RHS => b(:,dofs)
      Solver % Variable % Values=0
      Norm = DefaultSolve()
@@ -2893,6 +2914,11 @@ CONTAINS
  
    DO i=1,m
       dofs = dofs+1
+
+      IF(fielddim == 2) THEN
+        IF( i==3 .OR. i==6 ) CYCLE
+      END IF
+      
       x = b(1:n,dofs)
       CALL LUSolve(n,MASS,x,pivot)
       Var % Values(ind(1:n)+i) = x(1:n)
@@ -2910,11 +2936,12 @@ CONTAINS
    INTEGER :: dofs
    REAL(KIND=dp) :: b(:,:)
    TYPE(Element_t), POINTER, OPTIONAL :: UElement
-   REAL(KIND=dp), OPTIONAL :: Values(:)
+   REAL(KIND=dp), OPTIONAL, TARGET :: Values(:)
    LOGICAL, OPTIONAL :: uAdditive
 !------------------------------------------------------------------------------
    INTEGER :: ind(n), i
    LOGICAL :: Additive
+   REAL(KIND=dp), POINTER :: PValues(:)
 !------------------------------------------------------------------------------
    IF(.NOT. ASSOCIATED(var)) RETURN
 
@@ -2934,26 +2961,25 @@ CONTAINS
      Additive = .FALSE.
    END IF
 
-   dofs = bias
-   IF(PRESENT(Values)) THEN
-     DO i=1,m
-       dofs = dofs+1
-       IF(Additive) THEN
-         Values(ind(1:n)+i) = Values(ind(1:n)+i) + b(1:n,dofs)
-       ELSE
-         Values(ind(1:n)+i) = b(1:n,dofs)
-       END IF
-     END DO
+   IF( PRESENT( Values ) ) THEN
+     PValues => Values
    ELSE
-     DO i=1,m
-       dofs = dofs+1
-       IF(Additive) THEN
-         Var % Values(ind(1:n)+i) = Var % Values(ind(1:n)+i) + b(1:n,dofs)
-       ELSE
-         Var % Values(ind(1:n)+i) = b(1:n,dofs)
-       END IF
-     END DO
+     PValues => Var % Values
    END IF
+   
+   dofs = bias
+
+   DO i=1,m
+     dofs = dofs+1
+     IF( fielddim == 2 ) THEN
+       IF( i==3 .OR. i==6 ) CYCLE
+     END IF
+     IF(Additive) THEN
+       PValues(ind(1:n)+i) = PValues(ind(1:n)+i) + b(1:n,dofs)
+     ELSE
+       PValues(ind(1:n)+i) = b(1:n,dofs)
+     END IF
+   END DO
 !------------------------------------------------------------------------------
  END SUBROUTINE LocalCopy
 !------------------------------------------------------------------------------
