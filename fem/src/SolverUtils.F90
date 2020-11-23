@@ -20484,12 +20484,16 @@ CONTAINS
          Proj => ProjTable(Nstore) % Proj
        END IF
        GotProj = ASSOCIATED( Proj ) 
-       PRINT *,'Getting projector:',GotProj,Ntime,Nstore,Ncycle,ASSOCIATED(Proj)
+       IF( InfoActive(12) ) THEN
+         PRINT *,'Getting cyclic projector:',GotProj,Ntime,Nstore,Ncycle,ASSOCIATED(Proj)
+       END IF
      ELSE
        ! storing projector
        SetProj = .NOT. ASSOCIATED( ProjTable(Nstore) % Proj )       
        IF( SetProj ) ProjTable(Nstore) % Proj => Proj
-       PRINT *,'Setting projector:',SetProj,Ntime,Nstore,Ncycle,ASSOCIATED(Proj)
+       IF( InfoActive(12) ) THEN
+         PRINT *,'Setting cyclic projector:',SetProj,Ntime,Nstore,Ncycle,ASSOCIATED(Proj)
+       END IF
      END IF
          
    END SUBROUTINE StoreCyclicProjector

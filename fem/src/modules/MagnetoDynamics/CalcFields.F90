@@ -166,9 +166,9 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
   LOGICAL :: Transient
 !------------------------------------------------------------------------------
 
-  INTEGER  :: i
+  INTEGER  :: i, dim, fdim
   LOGICAL :: Found, FluxFound, NodalFields, ElementalFields, &
-      RealField, ComplexField, LorentzConductivity
+      RealField, ComplexField, LorentzConductivity, DoIt
   TYPE(ValueList_t), POINTER :: EQ, SolverParams
 
   LorentzConductivity = ListCheckPrefixAnyBodyForce(Model, "Angular Velocity") .or. &
@@ -177,6 +177,10 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
   IF(.NOT.ASSOCIATED(Solver % Values)) Solver % Values=>ListAllocate()
   SolverParams => GetSolverParams()
 
+  dim = CoordinateSystemDimension()
+  fdim = 3   
+  IF( ListGetLogical( SolverParams,'2D result fields',Found ) ) fdim = dim
+  
   ! Inherit this from the _init0 solver. Hence we know it must exist!
   RealField = ListGetLogical( SolverParams,'Target Variable Real Field') 
   ComplexField = .NOT. RealField
@@ -228,15 +232,22 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
   i = i - 1
   
   IF( NodalFields ) THEN
-    i = i + 1
-    IF ( RealField ) THEN
-      CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-          "Magnetic Flux Density[Magnetic Flux Density:3]" )
-    ELSE
-      CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-          "Magnetic Flux Density[Magnetic Flux Density re:3 Magnetic Flux Density im:3]" )
-    END IF
+    DoIt = GetLogical(SolverParams,'Calculate Magnetic Flux Density',Found)
+    IF(.NOT. Found) DoIt = .TRUE.
 
+    IF( DoIt ) THEN
+      i = i + 1
+
+      IF ( RealField ) THEN
+        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
+            "Magnetic Flux Density[Magnetic Flux Density:"//TRIM(I2S(fdim))//"]" )
+      ELSE
+        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
+            "Magnetic Flux Density[Magnetic Flux Density re:"//TRIM(I2S(fdim))//&
+            " Magnetic Flux Density im:"//TRIM(I2S(fdim))//"]" )
+      END IF
+    END IF
+      
     IF (GetLogical(SolverParams,'Calculate Magnetic Vector Potential',Found)) THEN
       i = i + 1
       IF ( RealField ) THEN
@@ -252,10 +263,11 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
       i = i + 1
       IF ( RealField ) THEN
         CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "Magnetic Field Strength[Magnetic Field Strength:3]" )
+            "Magnetic Field Strength[Magnetic Field Strength:"//TRIM(I2S(fdim))//"]" )
       ELSE
         CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "Magnetic Field Strength[Magnetic Field Strength re:3 Magnetic Field Strength im:3]")
+            "Magnetic Field Strength[Magnetic Field Strength re:"//TRIM(I2S(fdim))//&
+            " Magnetic Field Strength im:"//TRIM(I2S(fdim))//"]")
       END IF
     END IF
 
@@ -342,18 +354,13 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
           "Nodal Joule Heating" )
     END IF
 
-    IF (GetLogical(SolverParams, 'Calculate Nodal Forces', Found) ) THEN
-      IF( RealField ) THEN
-        i = i + 1
-        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "Nodal Force[Nodal Force:3]" )
-      ELSE
-        i = i + 1
-        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "Nodal Force[Nodal Force:3]" )
-        CALL Warn('MagnetcDynamicsCalcFields',&
-            'Calculating experimental average nodal forces. Use at own risk.')
-      END IF
+
+    IF( ListGetLogicalAnyComponent(Model,'Calculate Magnetic Force') .OR. &
+        ListGetLogicalAnyComponent(Model,'Calculate Magnetic Torque') .OR. &
+        GetLogical(SolverParams, 'Calculate Nodal Forces', Found) ) THEN
+      i = i + 1
+      CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
+          "Nodal Force[Nodal Force:"//TRIM(I2S(fdim))//"]" )
     END IF
   END IF
     
@@ -366,15 +373,21 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
   IF(.NOT. Found ) ElementalFields = .TRUE.
   
   IF( ElementalFields ) THEN
-    i = i + 1
-    IF ( RealField ) THEN
-      CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-          "-dg Magnetic Flux Density E[Magnetic Flux Density E:3]" )
-    ELSE
-      CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-          "-dg Magnetic Flux Density E[Magnetic Flux Density re E:3 Magnetic Flux Density im E:3]" )
+    DoIt = GetLogical(SolverParams,'Calculate Magnetic Flux Density',Found)
+    IF(.NOT. Found) DoIt = .TRUE.
+    
+    IF( DoIt ) THEN
+      i = i + 1
+      IF ( RealField ) THEN
+        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
+            "-dg Magnetic Flux Density E[Magnetic Flux Density E:"//TRIM(I2S(fdim))//"]" )
+      ELSE
+        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
+            "-dg Magnetic Flux Density E[Magnetic Flux Density re E:"//TRIM(I2S(fdim))//&
+            " Magnetic Flux Density im E:"//TRIM(I2S(fdim))//"]" )
+      END IF
     END IF
-
+      
     IF (GetLogical(SolverParams,'Calculate Magnetic Vector Potential',Found)) THEN
       i = i + 1
       IF ( RealField ) THEN
@@ -390,10 +403,11 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
       i = i + 1
       IF ( RealField ) THEN
         CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "-dg Magnetic Field Strength E[Magnetic Field Strength E:3]" )
+            "-dg Magnetic Field Strength E[Magnetic Field Strength E:"//TRIM(I2S(fdim))//"]" )
       ELSE
         CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "-dg Magnetic Field Strength E[Magnetic Field Strength re E:3 Magnetic Field Strength im E:3]" )
+            "-dg Magnetic Field Strength E[Magnetic Field Strength re E:"//TRIM(I2S(fdim))//&
+            " Magnetic Field Strength im E:"//TRIM(I2S(fdim))//"]" )
       END IF
     END IF
 
@@ -474,18 +488,11 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
       END IF
     END IF
 
-    IF (GetLogical(SolverParams, 'Calculate Nodal Forces', Found) ) THEN
-      IF( RealField ) THEN
-        i = i + 1
-        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "-dg Nodal Force E[Nodal Force E:3]" )
-      ELSE
-        i = i + 1
-        CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
-            "-dg Nodal Force E[Nodal Force E:3]" )
-        CALL Warn('MagnetcDynamicsCalcFields',&
-            'Calculating experimental average nodal forces. Use at own risk.')
-      END IF
+    IF( ListGetLogicalAnyComponent(Model,'Calculate Magnetic Force') .OR. &
+        ListGetLogicalAnyComponent(Model,'Calculate Magnetic Torque') .OR. &
+        GetLogical( SolverParams,'Calculate Nodal Forces', Found) ) THEN
+      CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
+          "-dg Nodal Force E[Nodal Force E:"//TRIM(I2S(fdim))//"]" )
     END IF
   END IF
     
@@ -597,8 +604,8 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    REAL(KIND=dp) :: line_tangent(3)
    INTEGER :: IOUnit, pIndex
    REAL(KIND=dp) :: SaveNorm
-   INTEGER :: NormIndex, fielddim
-   LOGICAL :: ConstantMassMatrixInUse = .FALSE.
+   INTEGER :: NormIndex, Fdim
+   LOGICAL, SAVE :: ConstantMassMatrixInUse = .FALSE.
    
    INTEGER, POINTER, SAVE :: SetPerm(:) => NULL()
 !-------------------------------------------------------------------------------------------
@@ -607,13 +614,14 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    CALL Info('MagnetoDynamicsCalcFields','------------------------------',Level=6)
    CALL Info('MagnetoDynamicsCalcFields','Computing postprocessed fields',Level=5)
    
-   dim = CoordinateSystemDimension()
-   fielddim = 3
-
-
    SolverParams => GetSolverParams()
 
-   ! This is a hack to be able to control the norm that is tested for
+   dim = CoordinateSystemDimension()
+   fdim = 3   
+   IF( ListGetLogical( SolverParams,'2D result fields',Found ) ) fdim = dim
+
+
+  ! This is a hack to be able to control the norm that is tested for
    NormIndex = GetInteger(SolverParams,'Show Norm Index',Found ) 
    SaveNorm = 0.0_dp
    
@@ -731,56 +739,56 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    MST => variableGet( Mesh % Variables, 'Maxwell stress' )
    EL_MST => variableGet( Mesh % Variables, 'Maxwell stress E' )
 
-   DOFs = 0 
-   IF ( ASSOCIATED(MFD) ) DOFs=DOFs+3
-   IF ( ASSOCIATED(MFS) ) DOFs=DOFs+3
-   IF ( ASSOCIATED(VP)  ) DOFs=DOFs+3
-   IF ( ASSOCIATED(CD)  ) DOFs=DOFs+3
-   IF ( ASSOCIATED(FWP) ) DOFs=DOFs+1
-   IF ( ASSOCIATED(EF)  ) DOFs=DOFs+3
-   IF ( ASSOCIATED(JXB) ) DOFs=DOFs+3
-   IF ( ASSOCIATED(MST) ) DOFs=DOFs+6
-   IF ( ASSOCIATED(NF)  ) DOFs=DOFs+3
-   DOFs = DOFs*vDOFs
-   IF ( ASSOCIATED(JH) .OR. ASSOCIATED(NJH)) DOFs=DOFs+1
-   IF ( ASSOCIATED(ML) ) DOFs=DOFs+1
-   IF ( ASSOCIATED(ML2) ) DOFs=DOFs+1
-   NodalFields = DOFs > 0
+   DOFs = 0
+   IF ( ASSOCIATED(MFD) .OR. ASSOCIATED(EL_MFD) ) DOFs=DOFs+vDofs*fdim
+   IF ( ASSOCIATED(MFS) .OR. ASSOCIATED(EL_MFS) ) DOFs=DOFs+vDofs*fdim
+   IF ( ASSOCIATED(VP) .OR. ASSOCIATED(EL_VP) ) DOFs=DOFs+vDofs*3
+   IF ( ASSOCIATED(EF) .OR. ASSOCIATED(EL_EF) ) DOFs=DOFs+vDofs*3
+   IF ( ASSOCIATED(CD) .OR. ASSOCIATED(EL_CD) ) DOFs=DOFs+vDofs*3
+   IF ( ASSOCIATED(JXB) .OR. ASSOCIATED(EL_JXB) ) DOFs=DOFs+vDofs*3
+   IF ( ASSOCIATED(FWP) .OR. ASSOCIATED(EL_FWP) ) DOFs=DOFs+vDofs*1
+   IF ( ASSOCIATED(MST) .OR. ASSOCIATED(EL_MST) ) DOFs=DOFs+vDofs*6
 
+   ! These have just one component even in complex equation
+   IF ( ASSOCIATED(JH) .OR. ASSOCIATED(EL_JH) .OR. ASSOCIATED(NJH)) DOFs=DOFs+1   
+   IF ( ASSOCIATED(ML) .OR. ASSOCIATED(EL_ML) ) DOFs=DOFs+1
+   IF ( ASSOCIATED(ML2) .OR. ASSOCIATED(EL_ML2) ) DOFs=DOFs+1   
+   IF ( ASSOCIATED(NF) .OR. ASSOCIATED(EL_NF) ) DOFs=DOFs+fdim
+
+   CALL Info('MagnetoDynamicsCalcFields','Number of components to compute: '//TRIM(I2S(DOFs)))
+         
+   NodalFields = &
+       ASSOCIATED(MFD) .OR. &
+       ASSOCIATED(MFS) .OR. &
+       ASSOCIATED(VP) .OR. &
+       ASSOCIATED(CD) .OR. &
+       ASSOCIATED(FWP) .OR. &
+       ASSOCIATED(EF) .OR. &
+       ASSOCIATED(JXB) .OR. &
+       ASSOCIATED(MST) .OR. &
+       ASSOCIATED(NF) .OR. ASSOCIATED(NJH)  .OR. &
+       ASSOCIATED(JH) .OR. &
+       ASSOCIATED(ML) .OR. &
+       ASSOCIATED(ML2) 
+   
+   ElementalFields = &
+       ASSOCIATED(EL_MFD) .OR. &
+       ASSOCIATED(EL_MFS) .OR. &
+       ASSOCIATED(EL_VP) .OR. &
+       ASSOCIATED(EL_CD)  .OR. &
+       ASSOCIATED(EL_FWP) .OR. & 
+       ASSOCIATED(EL_EF)  .OR. &
+       ASSOCIATED(EL_JXB) .OR. &
+       ASSOCIATED(EL_MST) .OR. & 
+       ASSOCIATED(EL_NF) .OR. & 
+       ASSOCIATED(EL_JH) .OR. & 
+       ASSOCIATED(EL_ML)  .OR. &
+       ASSOCIATED(EL_ML2) 
+   
    IF(NodalFields) THEN
      ALLOCATE(GForce(SIZE(Solver % Matrix % RHS),DOFs)); Gforce=0._dp
-   ELSE
-     DOFs = 0 
-     IF ( ASSOCIATED(EL_MFD) ) DOFs=DOFs+3
-     IF ( ASSOCIATED(EL_MFS) ) DOFs=DOFs+3
-     IF ( ASSOCIATED(EL_VP)  ) DOFs=DOFs+3
-     IF ( ASSOCIATED(EL_CD)  ) DOFs=DOFs+3
-     IF ( ASSOCIATED(EL_FWP) ) DOFs=DOFs+1
-     IF ( ASSOCIATED(EL_EF)  ) DOFs=DOFs+3
-     IF ( ASSOCIATED(EL_JXB) ) DOFs=DOFs+3
-     IF ( ASSOCIATED(EL_MST) ) DOFs=DOFs+6
-     IF ( ASSOCIATED(EL_NF) ) DOFs=DOFs+3 
-     DOFs = DOFs*vDOFs
-     IF ( ASSOCIATED(EL_NF) ) DOFs=DOFs+3 
-     IF ( ASSOCIATED(EL_JH) ) DOFs=DOFs+1
-     IF ( ASSOCIATED(EL_ML) ) DOFs=DOFs+1
-     IF ( ASSOCIATED(EL_ML2) ) DOFs=DOFs+1
    END IF
-
-   ElementalFields = .FALSE.
-   IF ( ASSOCIATED(EL_MFD) ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_MFS) ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_VP)  ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_CD)  ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_FWP) ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_EF)  ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_JXB) ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_MST) ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_NF)  ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_JH)  ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_ML)  ) ElementalFields=.TRUE.
-   IF ( ASSOCIATED(EL_ML2)  ) ElementalFields=.TRUE.
-
+   
    n = Mesh % MaxElementDOFs
    ALLOCATE( MASS(n,n), FORCE(n,DOFs), Tcoef(3,3,n), RotM(3,3,n), Pivot(n))
 
@@ -936,7 +944,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
 
      dim = CoordinateSystemDimension()
      CSymmetry = ( CurrentCoordinateSystem() == AxisSymmetric .OR. &
-     CurrentCoordinateSystem() == CylindricSymmetric )
+         CurrentCoordinateSystem() == CylindricSymmetric )
      
      IF (CoilBody) THEN
        
@@ -1053,7 +1061,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
      FORCE = 0._dp
      E = 0._dp; B=0._dp
 
-     haszirka = .false.
+     haszirka = .FALSE.
      if(ASSOCIATED(MFS) .OR. ASSOCIATED(el_MFS)) THEN
        CALL GetHystereticMFS(Element, force(:,4:6), pSolver, HasZirka, CSymmetry=CSymmetry)
      end if
@@ -1460,29 +1468,34 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
            MASS(p,q)=MASS(p,q)+s*Basis(p)*Basis(q)
          END DO
          k = 0
-         DO l=1,vDOFs
-           FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3)+s*B(l,:)*Basis(p)
-           k = k+3
-         END DO
-
-         IF ( (ASSOCIATED(MFS).OR.ASSOCIATED(EL_MFS)) .and. .not. HasZirka) THEN
-           IF(.NOT. HasZirka) then
-             IF (RealField) THEN
-               FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3) + &
-                   s * (MATMUL(REAL(Nu), B(1,:)) - REAL(MG_ip)) * Basis(p)
-               k = k+3
-             ELSE
-               FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3) + s * &
-                   (MATMUL(REAL(Nu), B(1,:)) - MATMUL(AIMAG(Nu), B(2,:)) - REAL(MG_ip)) * Basis(p)
-               k = k+3
-               FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3) + s * &
-                   (MATMUL(AIMAG(Nu), B(1,:)) + MATMUL(REAL(Nu), B(2,:)) - AIMAG(MG_ip)) * Basis(p) 
-               k = k+3
-             END IF
+         
+         IF( ASSOCIATED(MFD) .OR. ASSOCIATED(EL_MFD) ) THEN
+           DO l=1,vDOFs
+             FORCE(p,k+1:fdim+3) = FORCE(p,k+1:fdim+3)+s*B(l,1:fdim)*Basis(p)
+             k = k+fdim
+           END DO
+         END IF
+           
+         IF ( (ASSOCIATED(MFS) .OR. ASSOCIATED(EL_MFS)) ) THEN
+           ! Don't really know how to compute MFS with Zirka
+           ! Skipping it will certainly cause errors since k becomes invalid
+           !IF(.NOT. HasZirka) then
+           IF (RealField) THEN
+             FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3) + &
+                 s * (MATMUL(REAL(Nu), B(1,:)) - REAL(MG_ip)) * Basis(p)
+             k = k+fdim
            ELSE
-             ! Never here?
-             FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3)-s*(REAL(MG_ip))*Basis(p)
+             FORCE(p,k+1:k+fdim) = FORCE(p,k+1:k+fdim) + s * &
+                 (MATMUL(REAL(Nu), B(1,1:fdim)) - MATMUL(AIMAG(Nu), B(2,1:fdim)) - REAL(MG_ip(1:fdim))) * Basis(p)
+             k = k+fdim
+             FORCE(p,k+1:k+fdim) = FORCE(p,k+1:k+fdim) + s * &
+                 (MATMUL(AIMAG(Nu), B(1,1:fdim)) + MATMUL(REAL(Nu), B(2,1:fdim)) - AIMAG(MG_ip(1:fdim))) * Basis(p) 
+             k = k+fdim
            END IF
+           !ELSE
+           ! Never here?
+           !FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3)-s*(REAL(MG_ip))*Basis(p)
+           !END IF
          END IF
          IF ( ASSOCIATED(VP).OR.ASSOCIATED(EL_VP)) THEN
            DO l=1,vDOFs
@@ -1739,11 +1752,11 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
          END IF
          IF (ASSOCIATED(NF).OR.ASSOCIATED(EL_NF)) THEN
            IF(RealField) THEN
-             FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3) + s*NF_ip(p,1:3)
+             FORCE(p,k+1:k+fdim) = FORCE(p,k+1:k+fdim) + s*NF_ip(p,1:fdim)
            ELSE
-             FORCE(p,k+1:k+3) = FORCE(p,k+1:k+3) + 0.5*s*NF_ip(p,1:3)
+             FORCE(p,k+1:k+fdim) = FORCE(p,k+1:k+fdim) + 0.5*s*NF_ip(p,1:fdim)
            END IF
-           k = k + 3
+           k = k + fdim
          END IF
        END DO ! p
      END DO ! j
@@ -1764,8 +1777,8 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
      IF(ElementalFields) THEN
        dofs = 0
        CALL LUdecomp(MASS,n,pivot)
-       CALL LocalSol(EL_MFD,  3*vdofs, n, MASS, FORCE, pivot, Dofs)
-       CALL LocalSol(EL_MFS,  3*vdofs, n, MASS, FORCE, pivot, Dofs)
+       CALL LocalSol(EL_MFD,  fdim*vdofs, n, MASS, FORCE, pivot, Dofs)
+       CALL LocalSol(EL_MFS,  fdim*vdofs, n, MASS, FORCE, pivot, Dofs)
        CALL LocalSol(EL_VP,   3*vdofs, n, MASS, FORCE, pivot, Dofs)
        CALL LocalSol(EL_EF,   3*vdofs, n, MASS, FORCE, pivot, Dofs)
        CALL LocalSol(EL_CD,   3*vdofs, n, MASS, FORCE, pivot, Dofs)
@@ -1777,7 +1790,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
        CALL LocalSol(EL_MST,  6*vdofs, n, MASS, FORCE, pivot, Dofs)
 
        ! This is a nodal quantity
-       CALL LocalCopy(EL_NF, 3, n, FORCE, Dofs)
+       CALL LocalCopy(EL_NF, fdim, n, FORCE, Dofs)
      END IF
    END DO
    
@@ -1796,8 +1809,8 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    IF(NodalFields) THEN
      Fsave => Solver % Matrix % RHS
      DOFs = 0
-     CALL GlobalSol(MFD,  3*vdofs, Gforce, Dofs)
-     CALL GlobalSol(MFS,  3*vdofs, Gforce, Dofs)
+     CALL GlobalSol(MFD,  fdim*vdofs, Gforce, Dofs)
+     CALL GlobalSol(MFS,  fdim*vdofs, Gforce, Dofs)
      CALL GlobalSol(VP ,  3*vdofs, Gforce, Dofs)
      CALL GlobalSol(EF,   3*vdofs, Gforce, Dofs)
      CALL GlobalSol(CD,   3*vdofs, Gforce, Dofs)
@@ -1816,9 +1829,9 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
      CALL GlobalSol(ML2,  1      , Gforce, Dofs)
      CALL GlobalSol(MST,  6*vdofs, Gforce, Dofs)
      IF (ASSOCIATED(NF)) THEN
-       DO i=1,3
+       DO i=1,fdim
          dofs = dofs + 1
-         NF % Values(i::3) = Gforce(:,dofs)
+         NF % Values(i::fdim) = Gforce(:,dofs)
        END DO
      END IF
      Solver % Matrix % RHS => Fsave
@@ -1863,7 +1876,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
            //TRIM(ListGetString(CompParams,'Name'))//' < :', LumpedForce
          CALL Info('MagnetoDynamicsCalcFields',Message,Level=6)           
 
-         DO i=1,3
+         DO i=1,fdim
            CALL ListAddConstReal( CompParams,'res: magnetic force '//TRIM(I2S(i)), LumpedForce(i) )
          END DO
 
@@ -1886,15 +1899,6 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
        CompParams => Model % Components(j) % Values
 
        IF( ListGetLogical( CompParams,'Calculate Magnetic Force', Found ) ) THEN 
-
-         ! fail if there is no nodal force variable available
-         IF (.NOT. ASSOCIATED(NF)) THEN
-           CALL Warn('MagnetoDynamicsCalcFields','Unable to calculated lumped &
-             &forces because nodal forces are not present. Use keyword &
-             &"Calculate Nodal Forces = true" in MagnetoDynamicsCalcFields solver.')
-           EXIT
-         END IF
-
          CALL ComponentNodalForceReduction(Model, Mesh, CompParams, NF, &
            Force = LumpedForce )
 
@@ -1902,21 +1906,13 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
            //TRIM(ListGetString(CompParams,'Name'))//' < :', LumpedForce
          CALL Info('MagnetoDynamicsCalcFields',Message,Level=6)           
 
-         DO i=1,3
+         DO i=1,fdim
            CALL ListAddConstReal( CompParams,'res: magnetic force '//TRIM(I2S(i)), LumpedForce(i) )
          END DO
 
        END IF
 
        IF( ListGetLogical( CompParams,'Calculate Magnetic Torque', Found ) ) THEN 
-
-         ! fail if there is no nodal force variable available
-         IF (.NOT. ASSOCIATED(NF)) THEN
-           CALL Warn('MagnetoDynamicsCalcFields','Unable to calculated lumped &
-             &forces because nodal forces are not present. Use keyword &
-             &"Calculate Nodal Forces = true" in MagnetoDynamicsCalcFields solver.')
-           EXIT 
-         END IF
 
          ! Warn if user has air gaps and no "nodal force e" is available
          IF ( HaveAirGap ) THEN
@@ -1925,8 +1921,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
              &present.')
          END IF
 
-         CALL ComponentNodalForceReduction(Model, Mesh, CompParams, NF, &
-           Torque = val )
+         CALL ComponentNodalForceReduction(Model, Mesh, CompParams, NF, Torque = val )
 
          WRITE( Message,'(A,ES15.6)') 'Magnetic torque reduced: > '&
            //TRIM(ListGetString(CompParams,'Name'))//' < :', val
@@ -2653,8 +2648,8 @@ CONTAINS
       END DO ! Integration points
       
       IF(ElementalFields) THEN
-        IF(HasLeft) CALL LocalCopy(EL_NF, 3, n_lp, LeftFORCE, 0, UElement=LeftParent, uAdditive=.TRUE.)
-        IF(HasRight) CALL LocalCopy(EL_NF, 3, n_rp, RightFORCE, 0, UElement=RightParent, uAdditive=.TRUE.)
+        IF(HasLeft) CALL LocalCopy(EL_NF, fdim, n_lp, LeftFORCE, 0, UElement=LeftParent, uAdditive=.TRUE.)
+        IF(HasRight) CALL LocalCopy(EL_NF, fdim, n_rp, RightFORCE, 0, UElement=RightParent, uAdditive=.TRUE.)
       END IF
     END DO ! Boundary elements
     
@@ -2783,7 +2778,7 @@ CONTAINS
      END DO
    END DO
    ALLOCATE(TorqueGroups(k))
-   IF(k .eq. 0) RETURN
+   IF(k == 0) RETURN
 
    TorqueGroups = AllGroups(1:k)
    ! done making union
@@ -2883,10 +2878,6 @@ CONTAINS
    DO i=1,m
      dofs = dofs+1
 
-     IF(fielddim == 2) THEN
-       IF( i==3 .OR. i==6 ) CYCLE
-     END IF
-     
      Solver % Matrix % RHS => b(:,dofs)
      Solver % Variable % Values=0
      Norm = DefaultSolve()
@@ -2920,10 +2911,6 @@ CONTAINS
  
    DO i=1,m
       dofs = dofs+1
-
-      IF(fielddim == 2) THEN
-        IF( i==3 .OR. i==6 ) CYCLE
-      END IF
       
       x = b(1:n,dofs)
       CALL LUSolve(n,MASS,x,pivot)
@@ -2951,12 +2938,20 @@ CONTAINS
 !------------------------------------------------------------------------------
    IF(.NOT. ASSOCIATED(var)) RETURN
 
-   IF(PRESENT(UElement)) THEN
-     ind(1:n) = Var % Perm(UElement % DGIndexes(1:n))
+   IF( Var % TYPE == Variable_on_nodes_on_elements ) THEN
+     IF(PRESENT(UElement)) THEN
+       ind(1:n) = Var % Perm(UElement % DGIndexes(1:n))
+     ELSE
+       ind(1:n) = Var % Perm(Element % DGIndexes(1:n))
+     END IF
    ELSE
-     ind(1:n) = Var % Perm(Element % DGIndexes(1:n))
+     IF(PRESENT(UElement)) THEN
+       ind(1:n) = Var % Perm(UElement % NodeIndexes(1:n))
+     ELSE
+       ind(1:n) = Var % Perm(Element % NodeIndexes(1:n))
+     END IF
    END IF
-
+     
    IF( ANY(ind(1:n) == 0 ) ) RETURN
    
    ind(1:n) = Var % Dofs * ( ind(1:n) - 1)
@@ -2977,9 +2972,7 @@ CONTAINS
 
    DO i=1,m
      dofs = dofs+1
-     IF( fielddim == 2 ) THEN
-       IF( i==3 .OR. i==6 ) CYCLE
-     END IF
+
      IF(Additive) THEN
        PValues(ind(1:n)+i) = PValues(ind(1:n)+i) + b(1:n,dofs)
      ELSE
