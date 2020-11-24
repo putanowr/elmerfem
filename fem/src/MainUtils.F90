@@ -5299,7 +5299,7 @@ CONTAINS
 !------------------------------------------------------------------------------
 ! If solver timing is requested start the watches
 !------------------------------------------------------------------------------
-     Timing = ListGetLogical(Params,'Solver Timing',Found)
+     Timing = ListCheckPrefix(Params,'Solver Timing')
      IF( Timing ) THEN
        t0 = CPUTime()
        rt0 = RealTime()
@@ -5443,14 +5443,17 @@ CONTAINS
        rst = RealTime() - rt0
 
        str = ListGetString( Params,'Equation',Found)
-       CALL ListAddConstReal(CurrentModel % Simulation,'res: solver cpu time '&
-              //TRIM(str),st)
-       CALL ListAddConstReal(CurrentModel % Simulation,'res: solver real time '&
-              //TRIM(str),rst)
        WRITE(Message,'(a,f8.2,f8.2,a)') 'Solver time (CPU,REAL) for '&
-        //TRIM(str)//': ',st,rst,' (s)'
+           //TRIM(str)//': ',st,rst,' (s)'
        CALL Info('SolverActivate',Message,Level=4)    
-
+      
+       IF( ListGetLogical(Params,'Solver Timing',Found)) THEN
+         CALL ListAddConstReal(CurrentModel % Simulation,'res: solver cpu time '&
+             //TRIM(str),st)
+         CALL ListAddConstReal(CurrentModel % Simulation,'res: solver real time '&
+             //TRIM(str),rst)
+       END IF
+         
        IF( ListGetLogical(Params,'Solver Timing Cumulative',Found)) THEN
           ct = ListGetConstReal(CurrentModel % Simulation,'res: cum solver cpu time '&
                 //TRIM(str),Found)
