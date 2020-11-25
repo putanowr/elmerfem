@@ -117,7 +117,7 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
   TYPE(Element_t), POINTER :: Element
 
   REAL(KIND=dp) :: Norm
-  INTEGER :: i,j,k,n, nb, nd, t, istat, Active, NonlinIter, iter
+  INTEGER :: i,j,k,n, nb, nd, t, istat, Active, NonlinIter, iter, tind
 
   TYPE(ValueList_t), POINTER :: BC
   REAL(KIND=dp), ALLOCATABLE :: STIFF(:,:), LOAD(:), FORCE(:), &
@@ -137,13 +137,16 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
   CHARACTER(*), PARAMETER :: Caller = 'MagnetoDynamics2D'
 
   REAL(KIND=dp), ALLOCATABLE, SAVE :: MassValues(:)
-  
+
+  TYPE(TabulatedBasisAtIp_t), POINTER, SAVE :: BasisFunctionsAtIp(:)=>NULL()
+  LOGICAL, SAVE :: BasisFunctionsInUse = .FALSE.
   
 !------------------------------------------------------------------------------
 
   CALL Info( Caller,'------------------------------------------------', Level=4 )
   CALL Info( Caller, 'Solving equation for magnetic vector potential', Level=4 )
   CALL Info( Caller,'------------------------------------------------', Level=4 )
+
   CALL DefaultStart()
   
   ! Allocate some permanent storage, this is done first time only:
@@ -152,6 +155,11 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
   Mesh => GetMesh()
   SolverParams => GetSolverParams()
 
+
+  IF( ListGetLogical( SolverParams,'Tabulate Basis Functions',Found ) ) THEN
+    CALL TabulateBasisFunctions()
+  END IF
+  
   CSymmetry = ( CurrentCoordinateSystem() == AxisSymmetric .OR. &
       CurrentCoordinateSystem() == CylindricSymmetric )
   
@@ -188,6 +196,7 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
     END IF
 
     InitHandles = .TRUE.
+    tind = 0
     
 !$omp parallel do private(Element,n,nd)   
     DO t=1,active
@@ -272,6 +281,59 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
 CONTAINS
 
 
+  SUBROUTINE TabulateBasisFunctions()
+
+    INTEGER :: i, t, n, tind
+    TYPE(Element_t), POINTER :: Element
+    TYPE(Nodes_t), SAVE :: Nodes
+    LOGICAL :: stat
+    TYPE(GaussIntegrationPoints_t) :: IP
+    REAL(KIND=dp), ALLOCATABLE :: Basis(:), dBasisdx(:,:)
+    REAL(KIND=dp) :: detJ, Weight
+
+    IF( BasisFunctionsInUse ) RETURN
+    
+    n = Mesh % MaxElementDofs
+    ALLOCATE(Basis(n), dBasisdx(n,3))
+    
+1   tind = 0
+        
+    DO i=1,GetNOFActive()
+      Element => GetActiveElement(i)
+            
+      IP = GaussPointsAdapt( Element )      
+      CALL GetElementNodes( Nodes, UElement=Element )
+      n  = GetElementNOFNodes(Element)     
+      
+      DO t=1,IP % n
+        tind = tind + 1
+             
+        stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
+            IP % W(t), detJ, Basis, dBasisdx )
+        Weight = IP % s(t) * DetJ
+
+        IF( BasisFunctionsInUse ) THEN
+          ALLOCATE(BasisFunctionsAtIp(tind) % Basis(n))
+          BasisFunctionsAtIp(tind) % Basis(1:n) = Basis(1:n)
+          ALLOCATE(BasisFunctionsAtIp(tind) % dBasisdx(n,3))
+          BasisFunctionsAtIp(tind) % dBasisdx(1:n,1:3) = dBasisdx(1:n,1:3)
+          BasisFunctionsAtIp(tind) % Weight = Weight          
+        END IF
+      END DO
+    END DO
+
+    IF(.NOT. BasisFunctionsInUse ) THEN
+      ALLOCATE( BasisFunctionsAtIp(tind) )
+      BasisFunctionsInUse = .TRUE.
+      GOTO 1
+    END IF
+
+    DEALLOCATE(Basis, dBasisdx)    
+    CALL Info(Caller,'Number of tabulated basis functions:'//TRIM(I2S(tind)),Level=5)
+    
+  END SUBROUTINE TabulateBasisFunctions
+  
+
 !------------------------------------------------------------------------------
 ! This is monolithic lumping routine that has been optimized for speed.
 ! This way we need to evaluate the Basis functions only once for each element.
@@ -283,7 +345,8 @@ CONTAINS
    REAL(KIND=dp) :: torq,TorqArea,IMoment,IA, &
        rinner,router,rmean,ctorq,detJ,Weight,Bp,Br,Bx,By,x,y,r,rho
    REAL(KIND=dp), ALLOCATABLE, SAVE :: a(:),u(:),POT(:),dPOT(:), &
-       pPot(:),Density(:), Basis(:), dBasisdx(:,:)
+       pPot(:),Density(:)
+   REAL(KIND=dp), POINTER, SAVE :: Basis(:), dBasisdx(:,:)
    INTEGER :: i,bfid,n,nd,nbf
    LOGICAL :: Found, Stat
    TYPE(ValueList_t),POINTER::Params
@@ -325,7 +388,9 @@ CONTAINS
      U=0._dp
      a=0._dp
    END IF
-    
+
+   tind = 0
+   
    DO i=1,GetNOFActive()
      Element => GetActiveElement(i)
      
@@ -370,8 +435,14 @@ CONTAINS
        END IF
      END IF
      
-     IF( .NOT. (ThisPot .OR. ThisInert .OR. ThisTorque ) ) CYCLE
-     
+     IF( .NOT. (ThisPot .OR. ThisInert .OR. ThisTorque ) ) THEN
+       IF( BasisFunctionsInUse ) THEN
+         IP = GaussPoints(Element)
+         tind = tind + IP % n
+       END IF
+       CYCLE
+     END IF
+       
      nd = GetElementNOFDOFs(Element)
      n  = GetElementNOFNodes(Element)     
      CALL GetElementNodes( Nodes, Element )
@@ -380,18 +451,24 @@ CONTAINS
      !----------------------
      IP = GaussPoints(Element)
      DO t=1,IP % n
+       
        ! Basis function values & derivatives at the integration point:
        !--------------------------------------------------------------
-       IF( ThisTorque ) THEN
+       IF( BasisFunctionsInUse ) THEN      
+         tind = tind + 1
+         Basis => BasisFunctionsAtIp(tind) % Basis
+         dBasisdx => BasisFunctionsAtIp(tind) % dBasisdx        
+         Weight = BasisFunctionsAtIp(tind) % Weight 
+       ELSE IF( ThisTorque ) THEN
          stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
              IP % W(t), detJ, Basis, dBasisdx )
+         weight = IP % s(t) * detJ
        ELSE
          stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
              IP % W(t), detJ, Basis )
+         weight = IP % s(t) * detJ
        END IF
-       
-       weight = IP % s(t) * detJ
-       
+              
        x = SUM(Nodes % x(1:nd)*Basis(1:nd))
        y = SUM(Nodes % y(1:nd)*Basis(1:nd))
        r = SQRT(x**2+y**2)
@@ -769,7 +846,7 @@ CONTAINS
     TYPE(Element_t), POINTER :: Element
     LOGICAL, INTENT(INOUT) :: InitHandles
 !------------------------------------------------------------------------------
-    REAL(KIND=dp), ALLOCATABLE, SAVE :: Basis(:), dBasisdx(:,:)
+    REAL(KIND=dp), POINTER, SAVE :: Basis(:), dBasisdx(:,:)
     REAL(KIND=dp), ALLOCATABLE, SAVE :: MASS(:,:), STIFF(:,:), FORCE(:), POT(:)    
     REAL(KIND=dp), POINTER, SAVE :: CVal(:),BVal(:),HVal(:)
     REAL(KIND=dp) :: Nu0, Nu, weight, SourceAtIp, CondAtIp, DetJ, Mu, MuDer, Babs
@@ -804,15 +881,17 @@ CONTAINS
     END IF
 
     ! Allocate storage if needed
-    IF (.NOT. ALLOCATED(Basis)) THEN
+    IF (.NOT. ALLOCATED(MASS)) THEN
       m = Mesh % MaxElementDofs
-      ALLOCATE(Basis(m), dBasisdx(m,3),&
-          MASS(m,m), STIFF(m,m), FORCE(m), POT(m), STAT=allocstat)      
+      ALLOCATE(MASS(m,m), STIFF(m,m),FORCE(m), POT(m), STAT=allocstat)      
       IF (allocstat /= 0) THEN
         CALL Fatal(Caller,'Local storage allocation failed')
       END IF
+      IF(.NOT. BasisFunctionsInUse ) THEN
+        ALLOCATE(Basis(m), dBasisdx(m,3))
+      END IF
     END IF
-
+      
     Material => GetMaterial(Element)
     IF( .NOT. ASSOCIATED( Material, PrevMaterial ) ) THEN
       PrevMaterial => Material           
@@ -844,10 +923,17 @@ CONTAINS
     DO t=1,IP % n
       ! Basis function values & derivatives at the integration point:
       !--------------------------------------------------------------
-      stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
-          IP % W(t), detJ, Basis, dBasisdx )
-      Weight = IP % s(t) * DetJ
-           
+      IF( BasisFunctionsInUse ) THEN      
+        tind = tind + 1
+        Basis => BasisFunctionsAtIp(tind) % Basis
+        dBasisdx => BasisFunctionsAtIp(tind) % dBasisdx        
+        Weight = BasisFunctionsAtIp(tind) % Weight 
+      ELSE
+        stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
+            IP % W(t), detJ, Basis, dBasisdx )
+        Weight = IP % s(t) * DetJ
+      END IF
+        
       ! diffusion term (D*grad(u),grad(v)):
       ! -----------------------------------
       IF( HBCurve ) THEN
@@ -1426,7 +1512,7 @@ CONTAINS
      Element => GetActiveElement(i)
      nd = GetElementNOFDOFs(Element)
      n  = GetElementNOFNodes(Element)
-
+     
      CALL Torque(Torq,TorqArea,Element,n,nd)
 
      Params=>GetBodyForce(Element)
