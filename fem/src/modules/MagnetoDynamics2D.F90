@@ -281,6 +281,9 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
 CONTAINS
 
 
+  !> Tabulate basis functions and their weights so that we do not need to compute them in the assembly
+  !> process. This assumes that the geometry is not changing.
+  !---------------------------------------------------------------------------------------------------
   SUBROUTINE TabulateBasisFunctions()
 
     INTEGER :: i, t, n, tind
@@ -290,45 +293,52 @@ CONTAINS
     TYPE(GaussIntegrationPoints_t) :: IP
     REAL(KIND=dp), ALLOCATABLE :: Basis(:), dBasisdx(:,:)
     REAL(KIND=dp) :: detJ, Weight
+    INTEGER :: Phase
 
     IF( BasisFunctionsInUse ) RETURN
     
     n = Mesh % MaxElementDofs
     ALLOCATE(Basis(n), dBasisdx(n,3))
-    
-1   tind = 0
+
+    DO Phase = 0,1
+  
+      tind = 0
         
-    DO i=1,GetNOFActive()
-      Element => GetActiveElement(i)
-            
-      IP = GaussPointsAdapt( Element )      
-      CALL GetElementNodes( Nodes, UElement=Element )
-      n  = GetElementNOFNodes(Element)     
-      
-      DO t=1,IP % n
-        tind = tind + 1
-             
-        stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
-            IP % W(t), detJ, Basis, dBasisdx )
-        Weight = IP % s(t) * DetJ
+      DO i=1,GetNOFActive()
+        Element => GetActiveElement(i)
 
-        IF( BasisFunctionsInUse ) THEN
-          ALLOCATE(BasisFunctionsAtIp(tind) % Basis(n))
-          BasisFunctionsAtIp(tind) % Basis(1:n) = Basis(1:n)
-          ALLOCATE(BasisFunctionsAtIp(tind) % dBasisdx(n,3))
-          BasisFunctionsAtIp(tind) % dBasisdx(1:n,1:3) = dBasisdx(1:n,1:3)
-          BasisFunctionsAtIp(tind) % Weight = Weight          
-        END IF
+        IP = GaussPointsAdapt( Element )      
+        CALL GetElementNodes( Nodes, UElement=Element )
+        n  = GetElementNOFNodes(Element)     
+
+        DO t=1,IP % n
+          tind = tind + 1
+
+          stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
+              IP % W(t), detJ, Basis, dBasisdx )
+          Weight = IP % s(t) * DetJ
+
+          ! Only populate the table the 2nd round
+          IF( Phase == 1 ) THEN
+            ALLOCATE(BasisFunctionsAtIp(tind) % Basis(n))
+            BasisFunctionsAtIp(tind) % Basis(1:n) = Basis(1:n)
+            ALLOCATE(BasisFunctionsAtIp(tind) % dBasisdx(n,3))
+            BasisFunctionsAtIp(tind) % dBasisdx(1:n,1:3) = dBasisdx(1:n,1:3)
+            BasisFunctionsAtIp(tind) % Weight = Weight          
+          END IF
+        END DO
       END DO
-    END DO
 
-    IF(.NOT. BasisFunctionsInUse ) THEN
-      ALLOCATE( BasisFunctionsAtIp(tind) )
-      BasisFunctionsInUse = .TRUE.
-      GOTO 1
-    END IF
-
+      ! Allocate for the basis functions when the size has been computed
+      IF(Phase == 0) THEN
+        ALLOCATE( BasisFunctionsAtIp(tind) )
+      END IF
+    ELSE
+      
     DEALLOCATE(Basis, dBasisdx)    
+
+    BasisFunctionsInUse = .TRUE.
+        
     CALL Info(Caller,'Number of tabulated basis functions:'//TRIM(I2S(tind)),Level=5)
     
   END SUBROUTINE TabulateBasisFunctions
@@ -448,8 +458,9 @@ CONTAINS
      CALL GetElementNodes( Nodes, Element )
      
      ! Numerical integration:
-     !----------------------
+     !-----------------------
      IP = GaussPoints(Element)
+     
      DO t=1,IP % n
        
        ! Basis function values & derivatives at the integration point:
