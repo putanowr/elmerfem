@@ -299,21 +299,21 @@ CONTAINS
     
     n = Mesh % MaxElementDofs
     ALLOCATE(Basis(n), dBasisdx(n,3))
-
+    
     DO Phase = 0,1
-  
+      
       tind = 0
-        
+      
       DO i=1,GetNOFActive()
         Element => GetActiveElement(i)
-
+        
         IP = GaussPointsAdapt( Element )      
         CALL GetElementNodes( Nodes, UElement=Element )
         n  = GetElementNOFNodes(Element)     
-
+        
         DO t=1,IP % n
           tind = tind + 1
-
+          
           stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
               IP % W(t), detJ, Basis, dBasisdx )
           Weight = IP % s(t) * DetJ
@@ -333,7 +333,7 @@ CONTAINS
       IF(Phase == 0) THEN
         ALLOCATE( BasisFunctionsAtIp(tind) )
       END IF
-    ELSE
+    END DO
       
     DEALLOCATE(Basis, dBasisdx)    
 
