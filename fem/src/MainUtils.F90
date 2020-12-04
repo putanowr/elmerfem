@@ -64,31 +64,27 @@ CONTAINS
     TYPE(Solver_t) :: Solver
 !------------------------------------------------------------------------------
     TYPE(ValueList_t), POINTER :: Params
-    LOGICAL :: Found
+    LOGICAL :: Found, Parallel
     CHARACTER(LEN=MAX_NAME_LEN) :: str
 !------------------------------------------------------------------------------
 
     Params => ListGetSolverParams(Solver)
     str = ListGetString( Params,'Linear System Solver', Found )
 
+    Parallel = ( ParEnv % PEs > 1 ) .AND. (.NOT. Solver % Mesh % SingleMesh ) 
+
+    
     IF ( str == 'direct' ) THEN
       str = ListGetString( Params,'Linear System Direct Method', Found )
       
       IF( Found ) THEN        
-        IF ( ParEnv % PEs > 1 ) THEN
+        IF ( Parallel ) THEN
           IF ( str /= 'mumps' .AND. str /= 'cpardiso' .AND. str /= 'permon' ) THEN
             CALL Warn( 'CheckLinearSolverOptions', 'Only MUMPS and CPardiso direct solver' // &
                 ' interface implemented in parallel, trying MUMPS!')
             str = 'mumps' 
             CALL ListAddString( Params,'Linear System Direct Method', str)
           END IF
-        ELSE
-!         IF ( str == 'mumps' ) THEN
-!           CALL Warn( 'CheckSolverOptions', 'Currently no serial interface' // &
-!               ' to the MUMPS solver implemented, trying UMFPACK!')
-!           str = 'umfpack'    
-!           CALL ListAddString( Params,'Linear System Direct Method', str)
-!         END IF
         END IF
         
         SELECT CASE( str )
@@ -127,7 +123,7 @@ CONTAINS
         END SELECT
         
       ELSE
-        IF ( ParEnv % PEs <= 1 ) THEN
+        IF ( .NOT. Parallel ) THEN
 #ifdef HAVE_UMFPACK
           str = 'umfpack'
 #else
@@ -153,7 +149,7 @@ CONTAINS
     ELSE
       IF (ListGetLogical( Params,  &
           'Linear System Use Hypre', Found )) THEN
-        IF( ParEnv % PEs <= 1 ) THEN
+        IF( .NOT. Parallel ) THEN
           CALL Fatal('CheckLinearSolverOptions','Hypre not usable in serial!')
         END IF
 #ifndef HAVE_HYPRE
@@ -163,7 +159,7 @@ CONTAINS
 
       IF (ListGetLogical( Params,  &
           'Linear System Use Trilinos', Found )) THEN        
-        IF( ParEnv % PEs <= 1 ) THEN
+        IF( .NOT. Parallel ) THEN
           CALL Fatal('CheckLinearSolverOptions','Trilinos not usable in serial!')
         END IF
 #ifndef HAVE_TRILINOS
@@ -4901,7 +4897,7 @@ CONTAINS
     INTEGER :: i, n, Sweep, MeshDim 
     CHARACTER(LEN=MAX_NAME_LEN) :: EquationName
     TYPE(Element_t), POINTER :: Element
-    LOGICAL :: Found, HasFCT
+    LOGICAL :: Found, HasFCT, Parallel
     TYPE(Mesh_t), POINTER :: Mesh
     
     IF( .NOT. ( Solver % Mesh % Changed .OR. Solver % NumberOfActiveElements <= 0 ) ) RETURN
@@ -4921,14 +4917,20 @@ CONTAINS
     HasFCT = ListGetLogical( Solver % Values, 'Linear System FCT', Found )
 
     Mesh => Solver % Mesh
-    
+
     MeshDim = 0 
+    Parallel = ( ParEnv % MyPe > 1 ) .AND. ( .NOT. Mesh % SingleMesh ) 
+
     
     DO Sweep = 0, 1    
       n = 0
       DO i=1,Mesh % NumberOfBulkElements + Mesh % NumberOFBoundaryElements
         Element => Solver % Mesh % Elements(i)
-        IF( .NOT.HasFCT .AND. Element % PartIndex/=ParEnv % myPE ) CYCLE
+
+        IF( Parallel ) THEN
+          IF( .NOT.HasFCT .AND. Element % PartIndex /= ParEnv % myPE ) CYCLE
+        END IF
+          
         IF ( CheckElementEquation( Model, Element, EquationName ) ) THEN
           n = n + 1
           IF( Sweep == 0 ) THEN
@@ -4971,8 +4973,6 @@ CONTAINS
   END SUBROUTINE SetActiveElementsTable
 
 
-
-  
   
 !------------------------------------------------------------------------------
 !> This executes the original line of solvers (legacy solvers) where each solver 
@@ -4998,7 +4998,7 @@ CONTAINS
      TYPE(Matrix_t), POINTER :: M
      INTEGER :: comm_active, group_active, group_world, ierr
 
-     LOGICAL :: ApplyMortar, FoundMortar, SlaveNotParallel
+     LOGICAL :: ApplyMortar, FoundMortar, SlaveNotParallel, Parallel
      TYPE(Matrix_t), POINTER :: CM, CM0, CM1, CMP
 
 !------------------------------------------------------------------------------
@@ -5030,7 +5030,9 @@ CONTAINS
         MeActive = MeActive .AND. (Solver % Matrix % NumberOfRows > 0)
      IF(.NOT.SlaveNotParallel) CALL ParallelActive( MeActive )
 
-     IF ( ParEnv % PEs > 1 .AND. .NOT. SlaveNotParallel ) THEN
+     Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Solver % Mesh % SingleMesh ) 
+
+     IF ( Parallel .AND. .NOT. SlaveNotParallel ) THEN
        ! Set the communicator and active info partitions.
        
        n = COUNT(ParEnv % Active)
@@ -5104,7 +5106,7 @@ CONTAINS
        
      IF ( ASSOCIATED(Solver % Matrix) ) THEN
        ParEnv % ActiveComm = Solver % Matrix % Comm
-       IF ( ParEnv % PEs>1 .AND. MeActive ) THEN
+       IF ( Parallel .AND. MeActive ) THEN
          IF ( ASSOCIATED(Solver % Mesh % ParallelInfo % INTERFACE) ) THEN
            IF (.NOT. ASSOCIATED(Solver % Matrix % ParMatrix) ) &
              CALL ParallelInitMatrix(Solver, Solver % Matrix )

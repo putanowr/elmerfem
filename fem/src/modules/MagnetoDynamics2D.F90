@@ -156,7 +156,7 @@ SUBROUTINE MagnetoDynamics2D( Model,Solver,dt,Transient ) ! {{{
   SolverParams => GetSolverParams()
 
 
-  IF( ListGetLogical( SolverParams,'Tabulate Basis Functions',Found ) ) THEN
+  IF( ListGetLogical( SolverParams,'Store Basis Functions',Found ) ) THEN
     CALL TabulateBasisFunctions()
   END IF
   
@@ -363,7 +363,7 @@ CONTAINS
    TYPE(GaussIntegrationPoints_t) :: IP
    TYPE(Nodes_t), SAVE :: Nodes
    LOGICAL :: CalcTorque, CalcPot, CalcInert
-   LOGICAL :: ThisTorque, ThisPot, ThisInert
+   LOGICAL :: ThisTorque, ThisPot, ThisInert, Parallel
    LOGICAL, SAVE :: Visited = .FALSE.
 
 !------------------------------------------------------------------------------
@@ -376,6 +376,9 @@ CONTAINS
    
    IF(.NOT. (CalcTorque .OR. CalcPot .OR. CalcInert) ) RETURN
 
+   Parallel = ( ParEnv % PEs > 1 ) .AND. (.NOT. Mesh % SingleMesh ) 
+
+   
    nbf = Model % NumberOfBodyForces
    IF(.NOT. Visited ) THEN
      n = Model % Mesh % MaxElementNodes
@@ -514,10 +517,12 @@ CONTAINS
      
        
    IF( CalcPot ) THEN
-     DO i=1,nbf
-       a(i) = ParallelReduction(a(i))
-       u(i) = ParallelReduction(u(i))
-     END DO
+     IF( Parallel ) THEN
+       DO i=1,nbf
+         a(i) = ParallelReduction(a(i))
+         u(i) = ParallelReduction(u(i))
+       END DO
+     END IF
      DO i=1,nbf
        IF(a(i)>0) THEN
          CALL ListAddConstReal(Model % Simulation,'res: Potential / bodyforce ' &
@@ -530,11 +535,14 @@ CONTAINS
    
      
    IF( CalcTorque ) THEN   
-     Torq = ParallelReduction(Torq)
+     IF( Parallel ) THEN
+       Torq = ParallelReduction(Torq)
+       TorqArea = ParallelReduction(TorqArea)
+     END IF
+
      WRITE(Message,'(A,ES15.4)') 'Air gap initial torque:', Torq
      CALL Info(Caller,Message,Level=8)
      
-     TorqArea = ParallelReduction(TorqArea)
      IF (TorqArea /= 0) THEN
        Ctorq = PI*(router**2-rinner**2) / TorqArea
      ELSE
@@ -551,9 +559,11 @@ CONTAINS
    END IF
    
    IF( CalcInert ) THEN
-     IMoment = ParallelReduction(IMoment)
-     IA = ParallelReduction(IA)
-     
+     IF( Parallel ) THEN
+       IMoment = ParallelReduction(IMoment)
+       IA = ParallelReduction(IA)
+     END IF
+       
      WRITE(Message,'(A,ES15.4)') 'Inertial volume:', IA
      CALL Info(Caller,Message,Level=7)
      WRITE(Message,'(A,ES15.4)') 'Inertial moment:', Imoment

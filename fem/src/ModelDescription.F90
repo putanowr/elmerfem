@@ -2514,8 +2514,18 @@ CONTAINS
 
         CALL PrepareMesh( Model, Model % Meshes, ParEnv % PEs > 1, Def_Dofs )          
       ELSE
-        Model % Meshes => LoadMesh2( Model, MeshDir, MeshName, &
-            BoundariesOnly, numprocs, mype, Def_Dofs )
+        Single = ListGetLogical( Model % Simulation,'Single Mesh', GotIt ) 
+        IF( Single ) THEN
+          IF( ParEnv % PEs > 1 ) THEN
+            CALL Info('LoadModel','Whole primary mesh will be read for each partition!',Level=7)
+          END IF
+          Model % Meshes => LoadMesh2( Model, MeshDir, MeshName, &
+              BoundariesOnly, 1, mype, Def_Dofs )
+        ELSE
+          Model % Meshes => LoadMesh2( Model, MeshDir, MeshName, &
+              BoundariesOnly, numprocs, mype, Def_Dofs )
+        END IF
+        Model % Meshes % SingleMesh = Single       
       END IF
       
 
@@ -2538,7 +2548,7 @@ CONTAINS
             //TRIM(I2S(MeshLevels)))
       END IF
       MeshKeep = ListGetInteger( Model % Simulation, 'Mesh keep',  GotIt )
-      IF ( .NOT. GotIt ) MeshKeep=MeshLevels
+      IF ( .NOT. GotIt ) MeshKeep = MeshLevels
 
       IF( MeshLevels > 1 ) THEN
         CALL Info('LoadMesh','Keeping number of meshes: '//TRIM(I2S(MeshKeep)),Level=8)
@@ -2838,7 +2848,7 @@ CONTAINS
     Mesh => Model % Meshes
     DO WHILE( ASSOCIATED( Mesh ) )
       CALL MeshStabParams( Mesh )
-      Mesh => Mesh % Next
+      Mesh => Mesh % Next      
     END DO
 
 !------------------------------------------------------------------------------

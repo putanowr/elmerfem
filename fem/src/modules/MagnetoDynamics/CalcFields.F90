@@ -606,7 +606,7 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    REAL(KIND=dp) :: SaveNorm
    INTEGER :: NormIndex, Fdim
    LOGICAL, SAVE :: ConstantMassMatrixInUse = .FALSE.
-   
+   LOGICAL :: Parallel
    INTEGER, POINTER, SAVE :: SetPerm(:) => NULL()
 !-------------------------------------------------------------------------------------------
    IF ( .NOT. ASSOCIATED( Solver % Matrix ) ) RETURN
@@ -616,6 +616,8 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
    
    SolverParams => GetSolverParams()
 
+   Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Solver % Mesh % SingleMesh ) 
+   
    dim = CoordinateSystemDimension()
    fdim = 3   
    IF( ListGetLogical( SolverParams,'2D result fields',Found ) ) fdim = dim
@@ -1934,28 +1936,29 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
 
 
    ! Perform parallel reductions 
-   Power  = ParallelReduction(Power)
-   Energy(1) = ParallelReduction(Energy(1))
-   Energy(2) = ParallelReduction(Energy(2))
-   Energy(3) = ParallelReduction(Energy(3))
- 
-   IF (LossEstimation) THEN
-     DO j=1,2
-       DO i=1,2
-         ComponentLoss(j,i) = ParallelReduction(ComponentLoss(j,i)) 
+   IF(Parallel) THEN
+     Power  = ParallelReduction(Power)
+     Energy(1) = ParallelReduction(Energy(1))
+     Energy(2) = ParallelReduction(Energy(2))
+     Energy(3) = ParallelReduction(Energy(3))
+     
+     IF (LossEstimation) THEN
+       DO j=1,2
+         DO i=1,2
+           ComponentLoss(j,i) = ParallelReduction(ComponentLoss(j,i)) 
+         END DO
        END DO
-     END DO
 
-     DO j=1,3
-       DO i=1,Model % NumberOfBodies
-         BodyLoss(j,i) = ParallelReduction(BodyLoss(j,i))
+       DO j=1,3
+         DO i=1,Model % NumberOfBodies
+           BodyLoss(j,i) = ParallelReduction(BodyLoss(j,i))
+         END DO
+         TotalLoss(j) = SUM( BodyLoss(j,:) )
        END DO
-       TotalLoss(j) = SUM( BodyLoss(j,:) )
-     END DO
+     END IF
    END IF
-
    
-   WRITE(Message,*) 'Eddy current power: ', Power
+   WRITE(Message,'(A,ES12.3)') 'Eddy current power: ', Power
    CALL Info( 'MagnetoDynamicsCalcFields', Message )
    CALL ListAddConstReal( Model % Simulation, 'res: Eddy current power', Power )
 
@@ -2087,50 +2090,53 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
 
   IF (ListGetLogicalAnyBC( Model,'Magnetic Flux Average')) THEN
     IF (PiolaVersion) THEN
-         CALL Warn('MagnetoDynamicsCalcFields', &
+      CALL Warn('MagnetoDynamicsCalcFields', &
           'Magnetic Flux Average: The feature is not yet available for Piola transformed basis functions')
     ELSE
-    DO i=1,GetNOFBoundaryElements()
-       Element => GetBoundaryElement(i)
-       BC=>GetBC()
-       IF (.NOT. ASSOCIATED(BC) ) CYCLE
-     
-       SELECT CASE(GetElementFamily())
-       CASE(1)
-         CYCLE
-       CASE(2)
-         k = GetBoundaryEdgeIndex(Element,1); Element => Mesh % Edges(k)
-       CASE(3,4)
-         k = GetBoundaryFaceIndex(Element)  ; Element => Mesh % Faces(k)
-       END SELECT
-       IF (.NOT. ActiveBoundaryElement(Element)) CYCLE
+      DO i=1,GetNOFBoundaryElements()
+        Element => GetBoundaryElement(i)
+        BC=>GetBC()
+        IF (.NOT. ASSOCIATED(BC) ) CYCLE
 
-       IF (ASSOCIATED(Element % BoundaryInfo % Right)) THEN
-         BodyId = Element % BoundaryInfo % Right % BodyID       
-       ELSE IF (ASSOCIATED(Element % BoundaryInfo % Left)) THEN
-         BodyId = Element % BoundaryInfo % Left % BodyID
-       ELSE 
-         CALL Fatal ('MagnetoDynamicsCalcFields', 'Magnetic Flux Average: Boundary Element has not got a parent element.')
-       END IF
+        SELECT CASE(GetElementFamily())
+        CASE(1)
+          CYCLE
+        CASE(2)
+          k = GetBoundaryEdgeIndex(Element,1); Element => Mesh % Edges(k)
+        CASE(3,4)
+          k = GetBoundaryFaceIndex(Element)  ; Element => Mesh % Faces(k)
+        END SELECT
+        IF (.NOT. ActiveBoundaryElement(Element)) CYCLE
 
-       n = GetElementNOFNodes()
-       np = n*pSolver % Def_Dofs(GetElementFamily(Element),BodyId,1)
-       nd = GetElementNOFDOFs(uElement=Element, uSolver=pSolver)
-       CALL GetVectorLocalSolution(SOL,Pname,uElement=Element,uSolver=pSolver)
+        IF (ASSOCIATED(Element % BoundaryInfo % Right)) THEN
+          BodyId = Element % BoundaryInfo % Right % BodyID       
+        ELSE IF (ASSOCIATED(Element % BoundaryInfo % Left)) THEN
+          BodyId = Element % BoundaryInfo % Left % BodyID
+        ELSE 
+          CALL Fatal ('MagnetoDynamicsCalcFields', 'Magnetic Flux Average: Boundary Element has not got a parent element.')
+        END IF
 
-       CalcFluxLogical = GetLogical( BC, 'Magnetic Flux Average', Found)
-       IF (Found .AND. CalcFluxLogical) CALL calcAverageFlux(Flux, Area, Element, n, nd, np, SOL, vDOFs)
-    END DO
-    Flux(1) = ParallelReduction(Flux(1))
-    Flux(2) = ParallelReduction(Flux(2))
-    Area = ParallelReduction(Area)
+        n = GetElementNOFNodes()
+        np = n*pSolver % Def_Dofs(GetElementFamily(Element),BodyId,1)
+        nd = GetElementNOFDOFs(uElement=Element, uSolver=pSolver)
+        CALL GetVectorLocalSolution(SOL,Pname,uElement=Element,uSolver=pSolver)
 
-    IF( Area < EPSILON( Area ) ) THEN
-      CALL WARN('MagnetoDynamicsCalcFields', 'Magnetic Flux Average Computation: Area < Epsilon(Area)')
-      RETURN
-    END IF
+        CalcFluxLogical = GetLogical( BC, 'Magnetic Flux Average', Found)
+        IF (Found .AND. CalcFluxLogical) CALL calcAverageFlux(Flux, Area, Element, n, nd, np, SOL, vDOFs)
+      END DO
 
-    AverageFluxDensity = Flux / Area
+      IF( Parallel ) THEN
+        Flux(1) = ParallelReduction(Flux(1))
+        Flux(2) = ParallelReduction(Flux(2))
+        Area = ParallelReduction(Area)
+      END IF
+
+      IF( Area < EPSILON( Area ) ) THEN
+        CALL WARN('MagnetoDynamicsCalcFields', 'Magnetic Flux Average Computation: Area < Epsilon(Area)')
+        RETURN
+      END IF
+
+      AverageFluxDensity = Flux / Area
  
     WRITE(Message,*) 'Magnetic Flux Average: ', Flux(1)
     CALL Info( 'MagnetoDynamicsCalcFields', Message )
@@ -2235,8 +2241,11 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
 
       END DO
     END DO
-    Power  = ParallelReduction(Power)
-
+    
+    IF( Parallel ) THEN
+      Power  = ParallelReduction(Power)
+    END IF
+      
     WRITE(Message,*) 'Surface current power (the Joule effect): ', Power
     CALL Info( 'MagnetoDynamicsCalcFields', Message )
     CALL ListAddConstReal(Model % Simulation, 'res: Surface current power', Power)
@@ -2345,7 +2354,9 @@ END SUBROUTINE MagnetoDynamicsCalcFields_Init
       END DO
     END DO
 
-    ThinLinePower  = ParallelReduction(ThinLinePower)
+    IF( Parallel ) THEN
+      ThinLinePower  = ParallelReduction(ThinLinePower)
+    END IF
     WRITE(Message,*) 'Total thin line power (the Joule effect): ', ThinLinePower
     CALL Info( 'MagnetoDynamicsCalcFields', Message )
     CALL ListAddConstReal(Model % Simulation, 'res: thin line power', ThinLinePower)
@@ -2704,9 +2715,12 @@ CONTAINS
        END DO ! nnt
      END IF
    END DO ! pnodal
-   T(1) = ParallelReduction(T(1))
-   T(2) = ParallelReduction(T(2))
-   T(3) = ParallelReduction(T(3))
+
+   IF( Parallel ) THEN
+     T(1) = ParallelReduction(T(1))
+     T(2) = ParallelReduction(T(2))
+     T(3) = ParallelReduction(T(3))
+   END IF
 !------------------------------------------------------------------------------
  END SUBROUTINE NodalTorqueDeprecated
 !------------------------------------------------------------------------------
@@ -2853,12 +2867,15 @@ CONTAINS
      END DO 
 
    END DO
-   DO ng=1,size(TorqueGroups)
-     T(ng) = ParallelReduction(T(ng))
-   END DO
+
+   IF( Parallel ) THEN
+     DO ng=1,SIZE(TorqueGroups)
+       T(ng) = ParallelReduction(T(ng))
+     END DO
+   END IF
 
 !------------------------------------------------------------------------------
-  END SUBROUTINE NodalTorque
+ END SUBROUTINE NodalTorque
 !------------------------------------------------------------------------------
 
 !------------------------------------------------------------------------------

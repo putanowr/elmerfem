@@ -2096,6 +2096,8 @@ END INTERFACE
      TYPE(AdaptiveVariables_t), ALLOCATABLE, SAVE :: AdaptVars(:)     
      REAL(KIND=dp) :: newtime, prevtime=0, maxtime, exitcond
      INTEGER, SAVE :: PrevMeshI = 0
+     INTEGER :: nPeriodic
+     LOGICAL :: ParallelTime
      
      !$OMP PARALLEL
      IF(.NOT.GaussPointsInitialized()) CALL GaussPointsInit()
@@ -2133,15 +2135,25 @@ END INTERFACE
 
      dt = 1.0_dp
      cum_Timestep = 0
-     ddt = -1.0_dp  
+     ddt = -1.0_dp
+
+
+     ParallelTime = ListGetLogical( CurrentModel % Simulation,'Parallel Timestepping', GotIt ) &
+         .AND. ( ParEnv % PEs > 1 ) 
+     nPeriodic = ListGetInteger( CurrentModel % Simulation,'Periodic Timesteps',GotIt )
+     IF( ParallelTime .AND. nPeriodic == 0 ) THEN
+       CALL Fatal('ExecSimulation','Parallel timestepping requires "Periodic Timesteps"')
+     END IF
+
+     
      DO interval = 1,TimeIntervals
        
 !------------------------------------------------------------------------------
 !      go through number of timesteps within an interval
-!------------------------------------------------------------------------------
-       timePeriod = ListGetCReal(CurrentModel % Simulation, 'Time Period',gotIt)
+!------------------------------------------------------------------------------       
+       timePeriod = ListGetCReal(CurrentModel % Simulation, 'Time Period',gotIt)       
        IF(.NOT.GotIt) timePeriod = HUGE(timePeriod)
-
+         
        IF(GetNameSpaceCheck()) THEN
          IF(Scanning) THEN
            CALL ListPushNamespace('scan:')
@@ -2260,6 +2272,19 @@ END INTERFACE
          
 !------------------------------------------------------------------------------
          sTime(1) = sTime(1) + dt
+
+         IF( nPeriodic > 0 ) THEN
+           timePeriod = ParEnv % PEs * nPeriodic * dt           
+           IF( ParallelTime ) THEN
+             IF( cum_Timestep == 1 ) THEN
+               sTime(1) = sTime(1) + ParEnv % MyPe * nPeriodic * dt
+             ELSE IF( MODULO( cum_Timestep, nPeriodic ) == 1 ) THEN
+               CALL Info('ExecSimulation','Making jump in time-parallel scheme!')
+               sTime(1) = sTime(1) + nPeriodic * (ParEnv % PEs - 1) * dt
+             END IF
+           END IF
+         END IF
+                  
          sPeriodic(1) = sTime(1)
          DO WHILE(sPeriodic(1) > timePeriod)
            sPeriodic(1) = sPeriodic(1) - timePeriod 

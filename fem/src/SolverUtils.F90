@@ -4503,6 +4503,7 @@ CONTAINS
     CHARACTER(*), PARAMETER :: Caller = 'SetDirichletBoundaries'
     LOGICAL, ALLOCATABLE :: CandNodes(:)
     INTEGER, POINTER :: PlaneInds(:)
+    LOGICAL :: Parallel
     
 !------------------------------------------------------------------------------
 ! These logical vectors are used to minimize extra effort in setting up different BCs
@@ -4526,6 +4527,9 @@ CONTAINS
 
     Mesh => Model % Mesh
     ALLOCATE( Indexes(Mesh % MaxElementDOFs) )
+
+    Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Mesh % SingleMesh ) 
+    
 !------------------------------------------------------------------------------
 ! Go through the periodic BCs and set the linear dependence
 !------------------------------------------------------------------------------
@@ -4913,21 +4917,26 @@ CONTAINS
             ! In parallel case eliminate all except the nearest node. 
             ! This relies on the fact that for each node partition the 
             ! distance to nearest node is computed accurately. 
-            DO j=1,NoNodes
-              GlobalMinDist = ParallelReduction( MinDist(j), 1 )
-              IF( ABS( GlobalMinDist - MinDist(j) ) > TINY(Dist) ) THEN
-                IndNodes(j) = 0
-              END IF
-            END DO
-            
-            NOFNodesFound = 0
-            DO j=1,NoNodes
-               IF ( IndNodes(j)>0 ) THEN
-                 NOFNodesFound = NOFNodesFound+1
-                 IndNodes(NOFNodesFound) = IndNodes(j)
-               END IF
-            END DO
-            
+            IF( Parallel ) THEN
+              DO j=1,NoNodes
+                GlobalMinDist = ParallelReduction( MinDist(j), 1 )
+                IF( ABS( GlobalMinDist - MinDist(j) ) > TINY(Dist) ) THEN
+                  IndNodes(j) = 0
+                END IF
+              END DO
+              
+              NOFNodesFound = 0
+              DO j=1,NoNodes
+                IF ( IndNodes(j)>0 ) THEN
+                  NOFNodesFound = NOFNodesFound+1
+                  IndNodes(NOFNodesFound) = IndNodes(j)
+                END IF
+              END DO
+            ELSE
+              NOFNodesFound = COUNT( IndNodes(1:NoNodes) > 0 ) 
+            END IF
+
+              
             ! In the first time add the found nodes to the list structure
             IF ( NOFNodesFound > 0 ) THEN
               DO i=1,NOFNodesFound
@@ -5081,7 +5090,7 @@ CONTAINS
             DO i=1,n
               j = NodeIndexes(i)
               IF( Perm(j) == 0) CYCLE
-              IF( ParEnv % PEs > 1 ) THEN
+              IF( Parallel ) THEN
                 IF( SIZE( Mesh % ParallelInfo % NeighbourList(j) % Neighbours) > 1 ) CYCLE               
                 IF( Mesh % ParallelInfo % NeighbourList(j) % Neighbours(1) /= ParEnv % MyPe ) CYCLE               
               END IF
@@ -5091,11 +5100,12 @@ CONTAINS
             IF( ind > 0 ) EXIT
           END DO
 
-          k = NINT( ParallelReduction( 1.0_dp * ind, 2 ) ) 
-           
-          ! Find the maximum partition that owns a suitable node. 
-          ! It could be minimum also, just some convection is needed. 
-          IF( ParEnv % PEs > 1 ) THEN
+          k = ind
+          IF( Parallel ) THEN
+            k = NINT( ParallelReduction( 1.0_dp * ind, 2 ) ) 
+            
+            ! Find the maximum partition that owns a suitable node. 
+            ! It could be minimum also, just some convection is needed. 
             k = -1
             IF( ind > 0 ) k = ParEnv % MyPe          
             k = NINT( ParallelReduction( 1.0_dp * k, 2 ) ) 
@@ -5243,7 +5253,7 @@ CONTAINS
             DO i=1,n
               j = NodeIndexes(i)
               IF( Perm(j) == 0) CYCLE
-              IF( ParEnv % PEs > 1 ) THEN
+              IF( Parallel ) THEN
                 IF( SIZE( Mesh % ParallelInfo % NeighbourList(j) % Neighbours) > 1 ) CYCLE               
                 IF( Mesh % ParallelInfo % NeighbourList(j) % Neighbours(1) /= ParEnv % MyPe ) CYCLE               
                END IF
@@ -5255,7 +5265,7 @@ CONTAINS
 
           ! Find the maximum partition that owns the node. 
           ! It could be minimum also, just some convection is needed. 
-          IF( ParEnv % PEs > 1 ) THEN
+          IF( Parallel ) THEN
             k = -1
             IF( ind > 0 ) k = ParEnv % MyPe          
             k = NINT( ParallelReduction( 1.0_dp * k, 2 ) ) 
@@ -5273,7 +5283,7 @@ CONTAINS
           NeedListMatrix = .TRUE.
         END IF
 
-        IF( ParEnv % PEs > 1 ) CALL Warn(Caller,'Node index not set properly in parallel')
+        IF( Parallel ) CALL Warn(Caller,'Node index not set properly in parallel')
         IF( ind == 0 ) CYCLE
 
         ! Ok, now sum up the rows to the corresponding nodal index
@@ -5411,7 +5421,7 @@ CONTAINS
           NeedListMatrix = .TRUE.
         END IF
 
-        IF( ParEnv % PEs > 1 ) CALL Warn(Caller,'Node index perhaps not set properly in parallel')
+        IF( Parallel ) CALL Warn(Caller,'Node index perhaps not set properly in parallel')
         ! IF( ind == 0 ) CYCLE
 
         ! Ok, now sum up the rows to the corresponding nodal index
@@ -5472,7 +5482,9 @@ CONTAINS
 
     
     IF( InfoActive(12) )  THEN
-      DirCount = NINT( ParallelReduction( 1.0_dp * DirCount ) )
+      IF( Parallel ) THEN
+        DirCount = NINT( ParallelReduction( 1.0_dp * DirCount ) )
+      END IF
       CALL Info(Caller,'Number of dofs set for '//TRIM(Name)//': '&
           //TRIM(I2S(DirCount)),Level=12)
     END IF
@@ -5875,9 +5887,11 @@ CONTAINS
 
       ! Do not add non-zero entries to pure halo nodes which are not associated with the partition.
       ! These are nodes could be created by the -halobc flag in ElmerGrid.
-      IF( ParEnv % PEs > 1 ) THEN
-        IF( .NOT. ANY( A % ParallelInfo % NeighbourList(k) % Neighbours == ParEnv % MyPe ) ) THEN
-           RETURN
+      IF( Parallel ) THEN
+        IF( ASSOCIATED( A % ParallelInfo ) ) THEN
+          IF( .NOT. ANY( A % ParallelInfo % NeighbourList(k) % Neighbours == ParEnv % MyPe ) ) THEN
+            RETURN
+          END IF
         END IF
       END IF
 
@@ -5942,6 +5956,7 @@ CONTAINS
     TYPE(Variable_t), POINTER :: Var, WeightVar
     TYPE(ValueList_t), POINTER :: BC
     TYPE(MortarBC_t), POINTER :: MortarBC
+    LOGICAL :: Parallel
 !------------------------------------------------------------------------------
 
     nlen = LEN_TRIM(Name)
@@ -6775,6 +6790,7 @@ CONTAINS
     TYPE(ValueList_t), POINTER :: ValueList
     INTEGER, POINTER :: Indexes(:)
     CHARACTER(*), PARAMETER :: Caller = 'SetNodalSources'    
+    LOGICAL :: Parallel
     
     nlen = LEN_TRIM(SourceName)
        
@@ -6808,6 +6824,8 @@ CONTAINS
 
     
     AxiSymmetric = ( CurrentCoordinateSystem() /= Cartesian )
+
+    Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Mesh % SingleMesh ) 
     
     ! Only loop over BCs and BFs if needed. Here determine the loop.
     FirstElem = HUGE( FirstElem )
@@ -6848,7 +6866,7 @@ CONTAINS
         ValueList => Model % BodyForces(bf) % Values
       END IF
 
-      ! In parallel we may have halos etc. By default scaling is one. 
+      ! In parallel we may have halos etc. By default scaling is one.       
       Coeff = ParallelScalingFactor()
       IF(ABS(Coeff) < TINY(Coeff)) CYCLE
 
@@ -6872,7 +6890,7 @@ CONTAINS
       ! Default weight
       Coeff = 1.0_dp
       
-      IF ( ParEnv % PEs > 1 ) THEN
+      IF ( Parallel ) THEN
         IF ( ASSOCIATED(Element % BoundaryInfo) ) THEN
           P1 => Element % BoundaryInfo % Left
           P2 => Element % BoundaryInfo % Right
@@ -7984,7 +8002,8 @@ CONTAINS
     REAL(KIND=dp) :: dval, s
     INTEGER :: i,j,k,n
     CHARACTER(*), PARAMETER :: Caller = 'EnforceDirichletConditions'
-
+    LOGICAL :: Parallel
+    
     
     Params => Solver % Values
 
@@ -7994,10 +8013,14 @@ CONTAINS
       RETURN
     END IF
 
+    Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Solver % Mesh % SingleMesh ) 
     
     n = COUNT( A % ConstrainedDOF )
-    n = NINT( ParallelReduction(1.0_dp * n ) )
 
+    IF( Parallel ) THEN
+      n = NINT( ParallelReduction(1.0_dp * n ) )
+    END IF
+      
     IF( n == 0 ) THEN
       CALL Info(Caller,'No Dirichlet conditions to enforce, exiting!',Level=10)
       RETURN
@@ -8027,7 +8050,7 @@ CONTAINS
     END IF
     
     ! Communicate the Dirichlet conditions for parallel cases since there may be orphans      
-    IF ( ParEnv % PEs > 1 ) THEN
+    IF ( Parallel ) THEN
       DirichletComm = ListGetLogical( CurrentModel % Simulation, 'Dirichlet Comm', Found)
       IF(.NOT. Found) DirichletComm = .TRUE.
       IF( DirichletComm) CALL CommunicateDirichletBCs(A)
@@ -9440,7 +9463,8 @@ END FUNCTION SearchNodeL
     LOGICAL :: Stat, ComponentsAllocated, ConsistentNorm
     REAL(KIND=dp), POINTER :: x(:)
     REAL(KIND=dp), ALLOCATABLE, TARGET :: y(:)
-
+    LOGICAL :: Parallel
+    
     CALL Info('ComputeNorm','Computing norm of solution',Level=10)
 
     IF(PRESENT(values)) THEN
@@ -9449,7 +9473,9 @@ END FUNCTION SearchNodeL
       x => Solver % Variable % Values
     END IF
     
+    Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Solver % Mesh % SingleMesh ) 
 
+    
     NormDim = ListGetInteger(Solver % Values,'Nonlinear System Norm Degree',Stat)
     IF(.NOT. Stat) NormDim = 2
 
@@ -9476,7 +9502,7 @@ END FUNCTION SearchNodeL
     n = nin
     totn = 0
 
-    IF( ParEnv % PEs > 1 ) THEN
+    IF( Parallel ) THEN
       ConsistentNorm = ListGetLogical(Solver % Values,'Nonlinear System Consistent Norm',Stat)
       IF (ConsistentNorm) CALL Info('ComputeNorm','Using consistent norm in parallel',Level=10)
     ELSE
@@ -9516,25 +9542,33 @@ END FUNCTION SearchNodeL
           j = NormComponents(i)
           Norm = MAX(Norm, MAXVAL( ABS(x(j::Dofs))) )
         END DO
-        Norm = ParallelReduction(Norm,2)
+        IF( Parallel ) THEN
+          Norm = ParallelReduction(Norm,2)
+        END IF
       CASE(1)
         DO i=1,NormDofs
           j = NormComponents(i)
           Norm = Norm + SUM( ABS(x(j::Dofs)) )
         END DO
-        Norm = ParallelReduction(Norm)/nscale
+        IF( Parallel ) THEN
+          Norm = ParallelReduction(Norm)/nscale
+        END IF
       CASE(2)
         DO i=1,NormDofs
           j = NormComponents(i)
           Norm = Norm + SUM( x(j::Dofs)**2 )
         END DO
-        Norm = SQRT(ParallelReduction(Norm)/nscale)
+        IF( Parallel ) THEN
+          Norm = SQRT(ParallelReduction(Norm)/nscale)
+        END IF
       CASE DEFAULT
         DO i=1,NormDofs
           j = NormComponents(i)
           Norm = Norm + SUM( x(j::Dofs)**NormDim )
         END DO
-        Norm = (ParallelReduction(Norm)/nscale)**(1.0d0/NormDim)
+        IF( Parallel ) THEN
+          Norm = (ParallelReduction(Norm)/nscale)**(1.0d0/NormDim)
+        END IF
       END SELECT
     ELSE IF( ConsistentNorm ) THEN
       ! In consistent norm we have to skip the dofs not owned by the partition in order
@@ -9573,7 +9607,6 @@ END FUNCTION SearchNodeL
           IF( Solver % Matrix % ParallelInfo % NeighbourList(j) % Neighbours(1) &
               /= ParEnv % MyPE ) CYCLE
           val = x(j)
-          
           Norm = Norm + val**2 
         END DO
         
@@ -9597,31 +9630,43 @@ END FUNCTION SearchNodeL
         Norm = (ParallelReduction(Norm)/nscale)**(1.0d0/NormDim)
       END SELECT
       
-    ELSE      
+    ELSE IF( Parallel ) THEN
       val = ParallelReduction(1.0_dp*n)
       totn = NINT( val )
       IF (totn == 0) THEN
-         CALL Warn('ComputeNorm','Requested norm of a variable with no Dofs')
-         Norm = 0.0_dp
+        CALL Warn('ComputeNorm','Requested norm of a variable with no Dofs')
+        Norm = 0.0_dp
       ELSE
-         nscale = 1.0_dp * totn
-         
-         val = 0.0_dp
-         SELECT CASE(NormDim)
-         CASE(0)
-            IF (n>0) val = MAXVAL(ABS(x(1:n)))
-            Norm = ParallelReduction(val,2)
-         CASE(1)
-            IF (n>0) val = SUM(ABS(x(1:n)))
-            Norm = ParallelReduction(val)/nscale
-         CASE(2)
-            IF (n>0) val = SUM(x(1:n)**2)
-            Norm = SQRT(ParallelReduction(val)/nscale)
-         CASE DEFAULT
-            IF (n>0) val = SUM(x(1:n)**NormDim)
-            Norm = (ParallelReduction(val)/nscale)**(1.0d0/NormDim)
-         END SELECT
+        nscale = 1.0_dp * totn        
+        val = 0.0_dp
+        SELECT CASE(NormDim)
+        CASE(0)
+          IF (n>0) val = MAXVAL(ABS(x(1:n)))
+          Norm = ParallelReduction(val,2)
+        CASE(1)
+          IF (n>0) val = SUM(ABS(x(1:n)))
+          Norm = ParallelReduction(val)/nscale
+        CASE(2)
+          IF (n>0) val = SUM(x(1:n)**2)
+          Norm = SQRT(ParallelReduction(val)/nscale)
+        CASE DEFAULT
+          IF (n>0) val = SUM(x(1:n)**NormDim)
+          Norm = (ParallelReduction(val)/nscale)**(1.0d0/NormDim)
+        END SELECT
       END IF
+      
+    ELSE
+      val = 0.0_dp
+      SELECT CASE(NormDim)
+      CASE(0)
+        Norm = MAXVAL(ABS(x(1:n)))
+      CASE(1)
+        Norm = SUM(ABS(x(1:n)))/n
+      CASE(2)
+        Norm = SQRT(SUM(x(1:n)**2)/n)
+      CASE DEFAULT
+        Norm = (SUM((x(1:n)**NormDim)/nscale))**(1.0_dp/NormDim)
+      END SELECT
     END IF
 
 !   PRINT *,'ComputedNorm:',Norm, NormDIm
@@ -9754,10 +9799,12 @@ END FUNCTION SearchNodeL
     INTEGER :: ipar(1)
     TYPE(ValueList_t), POINTER :: SolverParams
     CHARACTER(*), PARAMETER :: Caller = 'ComputeChange'
-
+    LOGICAL :: Parallel
+    
     
     SolverParams => Solver % Values
     RelativeP = .FALSE.
+    Parallel = ( ParEnv % PEs > 1 ) .AND. (.NOT. Solver % Mesh % SingleMesh )  
     
     IF(SteadyState) THEN	
       Skip = ListGetLogical( SolverParams,'Skip Compute Steady State Change',Stat)
@@ -9980,7 +10027,7 @@ END FUNCTION SearchNodeL
       ALLOCATE(r(n))
       r=0._dp
 
-      IF (Parenv % Pes>1) THEN
+      IF (Parallel) THEN
         ALLOCATE( TmpRHSVec(n), TmpXVec(n) )
 
         nn = A % ParMatrix % SplittedMatrix % InsideMatrix % NumberOfRows
@@ -10024,7 +10071,7 @@ END FUNCTION SearchNodeL
       A => Solver % Matrix
       b => Solver % Matrix % rhs
       
-      IF (ParEnv % Pes > 1) THEN
+      IF (Parallel) THEN
 
         ALLOCATE( TmpRHSVec(n), TmpXVec(n), TmpRVec(n) )
         TmpRHSVec(1:n) = b(1:n)
@@ -10215,7 +10262,7 @@ END FUNCTION SearchNodeL
           'Linear System Set Average Solution',Stat)
     END IF
     IF( DoIt ) THEN
-      IF( ParEnv % PEs > 1 ) THEN
+      IF( Parallel ) THEN
         CALL Fatal(Caller,'Setting average value not implemented in parallel!')
       END IF
       Ctarget = ListGetCReal( SolverParams,'Average Solution Value',Stat)      
@@ -11992,12 +12039,14 @@ END FUNCTION SearchNodeL
     INTEGER :: n,i,j
     REAL(KIND=dp) :: bnorm,s
     COMPLEX(KIND=dp) :: DiagC
-    LOGICAL :: ComplexMatrix, DoRHS, DoCM, Found
+    LOGICAL :: ComplexMatrix, DoRHS, DoCM, Found, Parallel
     REAL(KIND=dp), POINTER  :: Diag(:)
 
     TYPE(Matrix_t), POINTER :: CM
 
     n = A % NumberOfRows
+
+    Parallel = ( ParEnv % PEs > 1 .AND. .NOT. Solver % Mesh % SingleMesh ) 
     
     CALL Info('ScaleLinearSystem','Scaling diagonal entries to unity',Level=10)
 
@@ -12050,7 +12099,7 @@ END FUNCTION SearchNodeL
         !$OMP END PARALLEL DO
       END IF
       
-      IF ( ParEnv % PEs > 1 ) CALL ParallelSumVector(A, Diag)
+      IF ( Parallel ) CALL ParallelSumVector(A, Diag)
 
       IF ( ComplexMatrix ) THEN
         !$OMP PARALLEL DO &
@@ -12085,7 +12134,7 @@ END FUNCTION SearchNodeL
               IF (j>0) Diag(i) = A % Values(j)
             END IF
           END DO
-          IF ( ParEnv % PEs > 1 ) CALL ParallelSumVector(A, Diag)
+          IF ( Parallel ) CALL ParallelSumVector(A, Diag)
         END IF
 
         !$OMP PARALLEL DO &
@@ -12565,7 +12614,10 @@ END FUNCTION SearchNodeL
     TYPE(Element_t), POINTER :: Element
     INTEGER :: bc, ind, NoBoundaryActive, NoBCs, ierr
     LOGICAL :: OnlyGivenBCs
-    LOGICAL :: UseVar
+    LOGICAL :: UseVar, Parallel
+
+
+    Parallel = ( ParEnv % PEs > 1 ) .AND. ( .NOT. Solver % Mesh % SingleMesh )
 
     UseVar = .FALSE.
     IF(PRESENT( NodalLoads ) ) THEN
@@ -12594,7 +12646,7 @@ END FUNCTION SearchNodeL
     END IF
 
 
-    IF ( ParEnv % PEs > 1 ) THEN
+    IF ( Parallel ) THEN
       ALLOCATE(TempRHS(SIZE(Rhs)))
       TempRHS = Rhs 
       CALL ParallelInitSolve( Aaid, x, TempRHS, Tempvector )
@@ -12608,7 +12660,7 @@ END FUNCTION SearchNodeL
       IF( ListGetLogical(Solver % Values, 'Linear System Complex', Found) ) THEN
         Energy_im = 0._dp
         DO i = 1, (Aaid % NumberOfRows / 2)
-          IF ( ParEnv % Pes>1 ) THEN
+          IF ( Parallel ) THEN
             IF ( Aaid% ParMatrix % ParallelInfo % &
               NeighbourList(2*(i-1)+1) % Neighbours(1) /= ParEnv % MyPE ) CYCLE
           END IF
@@ -12631,7 +12683,7 @@ END FUNCTION SearchNodeL
        CALL Info( 'CalculateLoads', Message, Level=5)
      ELSE 
        DO i=1,Aaid % NumberOfRows
-         IF ( ParEnv % Pes>1 ) THEN
+         IF ( Parallel ) THEN
            IF ( Aaid % ParMatrix % ParallelInfo % &
                 NeighbourList(i) % Neighbours(1) /= Parenv % MyPE ) CYCLE
          END IF
@@ -12648,7 +12700,7 @@ END FUNCTION SearchNodeL
     END IF
   END IF
 
-    IF ( ParEnv % PEs>1 ) THEN
+    IF ( Parallel ) THEN
       DO i=1,Aaid % NumberOfRows
         IF ( AAid % ParallelInfo % NeighbourList(i) % Neighbours(1) == ParEnv % Mype ) THEN
           TempVector(i) = TempVector(i) - TempRHS(i)
@@ -12744,7 +12796,7 @@ END FUNCTION SearchNodeL
           IF( ind == 0 ) CYCLE
 
           ! In this partition sum up only the true owners
-          IF ( ParEnv % PEs>1 ) THEN
+          IF ( Parallel ) THEN
             IF ( AAid % ParallelInfo % NeighbourList(ind) % Neighbours(1) &
                 /= ParEnv % Mype ) CYCLE
           END IF
@@ -12765,7 +12817,7 @@ END FUNCTION SearchNodeL
       
 
       NoBoundaryActive = 0
-      IF( ParEnv % PEs > 1 ) THEN
+      IF( Parallel ) THEN
         ALLOCATE( BufInteg( NoBCs ), BufReal( NoBCs * DOFs ) )
 
         BufInteg = BoundaryActive
@@ -13228,10 +13280,12 @@ END FUNCTION SearchNodeL
       CALL Info('SolveLinearSystem','Assuming real valued linear system',Level=8)
     END IF
 
+    Parallel = ( ParEnv % Pes>1 ) .AND. ( ASSOCIATED(A % ParMatrix) )
+    
 !------------------------------------------------------------------------------
 !   If parallel execution, check for parallel matrix initializations
 !------------------------------------------------------------------------------
-    IF ( ParEnv % Pes>1.AND..NOT. ASSOCIATED(A % ParMatrix) ) THEN
+    IF ( Parallel ) THEN
       CALL ParallelInitMatrix( Solver, A )
     END IF
 
@@ -13256,7 +13310,7 @@ END FUNCTION SearchNodeL
          TempRHS= b(1:n)
          Diag = A % Values(A % Diag)
 
-         IF(ParEnv % Pes>1) THEN
+         IF( Parallel ) THEN
            CALL ParallelSumVector(A,Diag)
            CALL ParallelSumVector(A,TempRHS)
          END IF
@@ -13408,7 +13462,12 @@ END FUNCTION SearchNodeL
 ! Check whether b=0 since then equation Ax=b has only the trivial solution, x=0. 
 ! In case of a limiter one still may need to check the limiter for contact.
 !-----------------------------------------------------------------------------
-    bnorm = SQRT(ParallelReduction(SUM(b(1:n)**2)))
+    IF( Parallel ) THEN
+      bnorm = SQRT(ParallelReduction(SUM(b(1:n)**2)))
+    ELSE
+      bnorm = SQRT(SUM(b(1:n)**2))
+    END IF
+      
     IF ( bnorm <= TINY( bnorm) .AND..NOT.SkipZeroRhs) THEN
       CALL Info('SolveLinearSystem','Solution trivially zero!',Level=5)
       x = 0.0d0
@@ -13437,7 +13496,6 @@ END FUNCTION SearchNodeL
     IF ( ScaleSystem ) THEN
       ApplyRowEquilibration = ListGetLogical(Params,'Linear System Row Equilibration',GotIt)
       IF ( ApplyRowEquilibration ) THEN
-        Parallel = ParEnv % PEs > 1
         CALL RowEquilibration(A, b, Parallel)
       ELSE
         CALL ScaleLinearSystem(Solver, A, b, x, &
@@ -13468,7 +13526,7 @@ END FUNCTION SearchNodeL
     IF( ListGetLogical( Params,'Linear System Normalize Guess',GotIt ) ) THEN
       ALLOCATE( TempVector(A % NumberOfRows) )
 
-      IF ( ParEnv % PEs > 1 ) THEN
+      IF ( Parallel ) THEN
         IF( .NOT. ALLOCATED( TempRHS ) ) THEN
           ALLOCATE( TempRHS(A % NumberOfRows) ); TempRHS=0._dp
         END IF
@@ -13505,7 +13563,6 @@ END FUNCTION SearchNodeL
     END IF
 
     Method = ListGetString(Params,'Linear System Solver',GotIt)
-    CALL Info('SolveLinearSystem','Linear System Solver: '//TRIM(Method),Level=8)
 
     IF (Method=='multigrid' .OR. Method=='iterative' ) THEN
       Prec = ListGetString(Params,'Linear System Preconditioning',GotIt)
@@ -13515,8 +13572,8 @@ END FUNCTION SearchNodeL
         IF ( Prec=='circuit' ) CALL CircuitPrecCreate(A,Solver)
       END IF
     END IF
-
-    IF ( ParEnv % PEs <= 1 ) THEN
+   
+    IF ( .NOT. Parallel ) THEN
       CALL Info('SolveLinearSystem','Serial linear System Solver: '//TRIM(Method),Level=8)
       
       SELECT CASE(Method)
@@ -13536,7 +13593,7 @@ END FUNCTION SearchNodeL
     ELSE
       CALL Info('SolveLinearSystem','Parallel linear System Solver: '//TRIM(Method),Level=8)
 
-    SELECT CASE(Method)
+      SELECT CASE(Method)
       CASE('multigrid')
         CALL MultiGridSolve( A, x, b, &
             DOFs, Solver, Solver % MultiGridLevel )
@@ -13624,29 +13681,29 @@ END FUNCTION SearchNodeL
 ! In order to be able to change the preconditioners or solvers the old matrix structures
 ! must be deallocated on request.
 
-    IF( ListGetLogical( Params, 'Linear System Preconditioning Deallocate', GotIt) ) THEN
-       ! ILU preconditioning
-       IF( ASSOCIATED(A % ILUValues) ) THEN
-          IF(  SIZE( A % ILUValues) /= SIZE(A % Values) ) &
-             DEALLOCATE(A % ILUCols, A % ILURows, A % ILUDiag)
-          DEALLOCATE(A % ILUValues)
+   IF( ListGetLogical( Params, 'Linear System Preconditioning Deallocate', GotIt) ) THEN
+     ! ILU preconditioning
+     IF( ASSOCIATED(A % ILUValues) ) THEN
+       IF(  SIZE( A % ILUValues) /= SIZE(A % Values) ) &
+           DEALLOCATE(A % ILUCols, A % ILURows, A % ILUDiag)
+       DEALLOCATE(A % ILUValues)
+     END IF
+
+     ! Multigrid solver / preconditioner
+     IF( Solver % MultigridLevel > 0 ) THEN
+       Aaid => A 
+       IF(ASSOCIATED( Aaid % Parent) ) THEN
+         DO WHILE( ASSOCIATED( Aaid % Parent ) )
+           Aaid => Aaid % Parent
+         END DO
+         DO WHILE( ASSOCIATED( Aaid % Child) )
+           Aaid => Aaid % Child
+           IF(ASSOCIATED(Aaid % Parent)) DEALLOCATE(Aaid % Parent )
+           IF(ASSOCIATED(Aaid % Ematrix)) DEALLOCATE(Aaid % Ematrix )
+         END DO
        END IF
-          
-       ! Multigrid solver / preconditioner
-       IF( Solver % MultigridLevel > 0 ) THEN
-          Aaid => A 
-          IF(ASSOCIATED( Aaid % Parent) ) THEN
-             DO WHILE( ASSOCIATED( Aaid % Parent ) )
-                Aaid => Aaid % Parent
-             END DO
-             DO WHILE( ASSOCIATED( Aaid % Child) )
-                Aaid => Aaid % Child
-                IF(ASSOCIATED(Aaid % Parent)) DEALLOCATE(Aaid % Parent )
-                IF(ASSOCIATED(Aaid % Ematrix)) DEALLOCATE(Aaid % Ematrix )
-             END DO
-          END IF
-       END IF
-    END IF
+     END IF
+   END IF
 
   END SUBROUTINE SolveLinearSystem
 !------------------------------------------------------------------------------
@@ -20342,14 +20399,19 @@ CONTAINS
      LOGICAL :: Found
      TYPE(Variable_t), POINTER :: v
      TYPE(Matrix_t), POINTER :: A     
-     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), PeriodicMult(:,:), dx(:), dy(:)
+     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), PeriodicMult(:,:), PeriodicNrm(:), dx(:), dy(:)
      REAL(KIND=dp), POINTER :: x(:), y(:)
      INTEGER :: n, m, Ncycle, Ntime, Nguess, Nstore, GuessMode
-     LOGICAL :: DoGuess, ExportMult
+     LOGICAL :: DoGuess, ExportMult, ParallelTime
      TYPE(Variable_t), POINTER :: Var
      CHARACTER(LEN=MAX_NAME_LEN) :: MultName
+     REAL(KIND=dp) :: Relax
      
-     SAVE PeriodicSol, dx, PeriodicMult, dy
+     
+     SAVE PeriodicSol, dx, PeriodicNrm, PeriodicMult, dy
+
+     CALL Info('StoreCyclicSolution','Saving restoring cyclic solution!',Level=7)
+
      
      Model => CurrentModel 
 
@@ -20357,7 +20419,7 @@ CONTAINS
      IF( NINT(v % Values(1)) > 1 ) RETURN
 
      Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
-    
+
      v => VariableGet( Solver % Mesh % Variables, 'timestep' )
      Ntime = NINT(v % Values(1))
 
@@ -20369,9 +20431,16 @@ CONTAINS
      
      A => Solver % Matrix
      n = A % NumberOfRows
-
+     
      x => Solver % Variable % Values 
 
+
+     ParallelTime = ListGetLogical( CurrentModel % Simulation,'Parallel Timestepping',Found ) &
+         .AND. ( ParEnv % PEs > 1 )
+
+
+     Relax = ListGetConstReal( Solver % Values,'Parallel Timestepping Relaxation Factor',Found ) 
+     IF(.NOT. Found ) Relax = 1.0_dp
      
      GuessMode = ListGetInteger( Solver % Values,'Cyclic Guess Mode',Found ) 
      
@@ -20392,9 +20461,10 @@ CONTAINS
        ! allocate stuff to save vectors
        IF(.NOT. ALLOCATED( PeriodicSol ) ) THEN
          CALL Info('StoreCyclicSolution','Allocating for periodic solver values',Level=6)
-         ALLOCATE( PeriodicSol(n,Ncycle), dx(n) )
+         ALLOCATE( PeriodicSol(n,Ncycle), PeriodicNrm(n), dx(n) )
          PeriodicSol = 0.0_dp
-
+         PeriodicNrm = 0.0_dp
+         
          IF( ExportMult ) THEN
            CALL Info('StoreCyclicSolution','Allocating for periodic Lagrange values',Level=6)
            ALLOCATE( PeriodicMult(m,Ncycle), dy(m) )
@@ -20407,7 +20477,13 @@ CONTAINS
      Nstore = MODULO( Ntime-2,Ncycle)+1
      Nguess = MODULO( Ntime-1,Ncycle)+1              
      DoGuess = ( Ntime > Ncycle + 1 )        
+     
+     IF( NGuess == 1 .AND. ParallelTime ) THEN
+       CALL Info('StoreCyclicSolution','Performing parallel initial guess!')
+       CALL CommunicateCyclicSolution()       
+     END IF
 
+     
      ! Perform guess only when there is enough data
      IF( DoGuess ) THEN
        IF( GuessMode == 0 ) THEN
@@ -20419,24 +20495,73 @@ CONTAINS
      END IF       
      
      PeriodicSol(:,Nstore) = x
-
+     PeriodicNrm(Nstore) = Solver % Variable % Norm
+     
      IF( ExportMult ) THEN
        PeriodicMult(:,Nstore) = y
      END IF
      
      IF( DoGuess ) THEN
-       IF( GuessMode == 0 ) THEN
+       CALL Info('StoreCyclicSolution','Using values from previous cycle for initial guess!')
+
+       IF( GuessMode < 0 ) THEN
+         CONTINUE
+       ELSE IF( GuessMode == 0 ) THEN
          x = x + dx
          IF( ExportMult ) THEN
            y = y + dy 
-         END IF
+         END IF         
+         Solver % Variable % Norm = SQRT( SUM(x(1:n)**2) / n )
        ELSE
          x = PeriodicSol(:,Nguess)
          IF( ExportMult ) THEN
            y = PeriodicMult(:,Nguess)
          END IF
+         Solver % Variable % Norm = PeriodicNrm(Nguess)
        END IF
      END IF
+
+   CONTAINS
+
+     SUBROUTINE CommunicateCyclicSolution()
+       INTEGER :: toproc, fromproc
+       INTEGER :: mpistat(MPI_STATUS_SIZE), ierr
+       REAL(KIND=dp), ALLOCATABLE :: tovals(:), fromvals(:)
+       INTEGER :: rank, size
+       INTEGER :: mpitag
+       INTEGER, SAVE :: VisitedTimes = 0
+
+       VisitedTimes = VisitedTimes + 1
+
+       
+       ! Sent data forward in time.
+       toproc = MODULO( ParEnv % MyPe + 1, ParEnv % PEs )
+       fromproc = MODULO( ParEnv % MyPe - 1, ParEnv % PEs )
+
+       PRINT *,'Communicate in time:',ParEnv % MyPe, toproc, fromproc, n
+      
+       ALLOCATE( tovals(n), fromvals(n) )
+
+       !PRINT *,'TimeError'//TRIM(I2S(ParEnv % Mype))//':',VisitedTimes, SUM(ABS(x-tovals))/SUM(ABS(x))
+
+       tovals = x         
+       CALL CheckBuffer( 2*n+n*MPI_BSEND_OVERHEAD )
+       
+       CALL MPI_BSEND( tovals, n, MPI_DOUBLE_PRECISION, &
+           toproc, 2005, MPI_COMM_WORLD, ierr )
+
+       CALL MPI_RECV( fromvals, n, MPI_DOUBLE_PRECISION, &
+           fromproc, 2005, MPI_COMM_WORLD, mpistat, ierr )
+
+       PRINT *,'Communication done:',ParEnv % MyPe
+
+       Solver % Variable % PrevValues(:,1) = fromvals
+
+       DEALLOCATE( tovals, fromvals ) 
+
+     END SUBROUTINE CommunicateCyclicSolution
+   
+
      
    END SUBROUTINE StoreCyclicSolution
    
@@ -20467,7 +20592,7 @@ CONTAINS
      
      Model => CurrentModel 
      Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
-    
+     
      v => VariableGet( Solver % Mesh % Variables, 'timestep' )
      Ntime = NINT(v % Values(1))
 

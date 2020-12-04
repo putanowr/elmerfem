@@ -4210,6 +4210,7 @@ CONTAINS
     LOGICAL :: TagNormalFlip, Turn
     TYPE(Nodes_t) :: ElementNodes
     REAL(KIND=dp) :: Normal(3)
+    LOGICAL :: Parallel
     
     CALL Info('CreateInterfaceMeshes','Making a list of elements at interface',Level=9)
 
@@ -4248,7 +4249,9 @@ CONTAINS
     NarrowHalo = .FALSE.
     NoHalo = .FALSE.
 
-    IF( ParEnv % PEs > 1 ) THEN
+    Parallel = ( ParEnv % PEs > 1 ) .AND. (.NOT. Mesh % SingleMesh ) 
+    
+    IF( Parallel ) THEN
       ! Account for halo elements that share some nodes for the master boundary
       NarrowHalo = ListGetLogical(Model % Solver % Values,'Projector Narrow Halo',Found)
 
@@ -22046,7 +22049,9 @@ CONTAINS
     INTEGER :: n,i,j,k,l,nodeind,dgind, Nneighbours
     REAL(KIND=dp) :: AveHits
     LOGICAL, ALLOCATABLE :: IsNeighbour(:)
+    LOGICAL :: Parallel
 
+    
     IF(.NOT. ASSOCIATED(var)) RETURN
     IF( SIZE(Var % Perm) <= Mesh % NumberOfNodes ) RETURN
 
@@ -22058,10 +22063,13 @@ CONTAINS
           //TRIM(Var % Name), Level=8)
     END IF
 
+    Parallel = (ParEnv % PEs > 1 ) .AND. ( .NOT. Mesh % SingleMesh ) 
+    
+    
     n = Mesh % NumberOfNodes
     ALLOCATE( BodyCount(n), BodyAverage(n), IsNeighbour(Parenv % PEs) )
-
-
+  
+    
     DO i=1,CurrentModel % NumberOfBodies
 
       DO k=1,Var % Dofs
@@ -22087,7 +22095,7 @@ CONTAINS
           !PRINT *,'AveHits:',i,AveHits
         END IF
 
-        IF(ParEnv % Pes>1) THEN
+        IF( Parallel ) THEN
           Nneighbours = MeshNeighbours(Mesh, IsNeighbour)
           CALL SendInterface(); CALL RecvInterface()
         END IF
