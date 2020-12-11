@@ -15475,6 +15475,7 @@ END SUBROUTINE FindNeighbourNodes
     TYPE(PElementDefs_t), POINTER :: PDefs
     INTEGER :: ierr, ParTmp(6), ParSizes(6)
     INTEGER, ALLOCATABLE :: FacePerm(:), BulkPerm(:)
+    LOGICAL :: Parallel
 !------------------------------------------------------------------------------
     IF ( .NOT. ASSOCIATED( Mesh ) ) RETURN
 
@@ -15489,6 +15490,10 @@ END SUBROUTINE FindNeighbourNodes
 
     NewMesh => AllocateMesh()
 
+    NewMesh % SingleMesh = Mesh % SingleMesh
+    Parallel = ( ParEnv % PEs > 1 ) .AND. (.NOT. NewMesh % SingleMesh )
+
+    
     EdgesPresent = ASSOCIATED(Mesh % Edges)
     IF(.NOT.EdgesPresent) CALL FindMeshEdges( Mesh )
 
@@ -17007,7 +17012,7 @@ END SUBROUTINE FindNeighbourNodes
     ParTmp(5) = NewMesh % NumberOfBulkElements
     ParTmp(6) = NewMesh % NumberOfBoundaryElements
 
-    IF( .FALSE. .AND. ParEnv % PEs > 1 ) THEN
+    IF( .FALSE. .AND. Parallel ) THEN
       CALL MPI_ALLREDUCE(ParTmp,ParSizes,6,MPI_INTEGER,MPI_SUM,ELMER_COMM_WORLD,ierr)
 
       CALL Info('SplitMeshEqual','Information on parallel mesh sizes')
@@ -17031,7 +17036,9 @@ END SUBROUTINE FindNeighbourNodes
 !
 !   Update structures needed for parallel execution:
 !   ------------------------------------------------
-    CALL UpdateParallelMesh( Mesh, NewMesh )
+    IF( Parallel ) THEN
+      CALL UpdateParallelMesh( Mesh, NewMesh )
+    END IF
 !
 !
 !   Finalize:
@@ -17063,7 +17070,6 @@ CONTAINS
        LOGICAL :: Found
 !------------------------------------------------------------------------------
 
-       IF ( ParEnv % PEs <= 1 ) RETURN
 !
 !      Update mesh interfaces for parallel execution.
 !      ==============================================

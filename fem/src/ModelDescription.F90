@@ -2281,6 +2281,7 @@ CONTAINS
     CHARACTER(LEN=MAX_NAME_LEN) :: MeshDir,MeshName
     TYPE(valuelist_t), POINTER :: lst
     INTEGER, ALLOCATABLE :: EdgeDOFs(:),FaceDOFs(:)
+    LOGICAL :: Parallel
 !------------------------------------------------------------------------------
 
     ALLOCATE( Model )
@@ -2761,7 +2762,8 @@ CONTAINS
         Model % Solvers(s) % Mesh % OutputActive = .TRUE.
         Model % Solvers(s) % Mesh % SingleMesh = Single
         
-
+        Parallel = ( ParEnv % PEs > 1 ) .AND. (.NOT. Single)
+        
         MeshLevels = ListGetInteger( Model % Solvers(s) % Values, 'Mesh Levels', GotIt )
         IF ( .NOT. GotIt ) MeshLevels=1
 
@@ -2770,7 +2772,6 @@ CONTAINS
 
         MeshPower   = ListGetConstReal( Model % Simulation, 'Mesh Grading Power',GotIt)
         MeshGrading = ListGetLogical( Model % Simulation, 'Mesh Keep Grading', GotIt)
-
 
         DO i=2,MeshLevels
           OldMesh => Model % Solvers(s) % Mesh
@@ -2796,8 +2797,10 @@ CONTAINS
             DEALLOCATE(EdgeDOFs,FaceDOFs)
 
             CALL SetMeshMaxDofs(NewMesh)
-            IF(ParEnv % PEs>1) CALL SParEdgeNumbering(NewMesh)
-            IF(ParEnv % PEs>1) CALL SParFAceNumbering(NewMesh)
+            IF( Parallel ) THEN
+              CALL SParEdgeNumbering(NewMesh)
+              CALL SParFAceNumbering(NewMesh)
+            END IF
           END IF
 
           IF ( i>MeshLevels-MeshKeep+1 ) THEN
