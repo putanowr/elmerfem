@@ -1803,4 +1803,9 @@ simulation:logical:  'vtu: save boundaries only'
 simulation:logical:  'vtu: save bulk only'
 simulation:logical:  'vtu: vtu part collection'
 solver:logical:      'apply source control'
+solver:logical:      'store cyclic solution'
+solver:logical:      'store cyclic projector'
+simulation:integer:  'parallel timestepping'
+simulation:integer:  'periodic timesteps'
+
 

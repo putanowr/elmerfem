@@ -9552,6 +9552,8 @@ END FUNCTION SearchNodeL
         END DO
         IF( Parallel ) THEN
           Norm = ParallelReduction(Norm)/nscale
+        ELSE
+          Norm = Norm/nscale
         END IF
       CASE(2)
         DO i=1,NormDofs
@@ -9560,6 +9562,8 @@ END FUNCTION SearchNodeL
         END DO
         IF( Parallel ) THEN
           Norm = SQRT(ParallelReduction(Norm)/nscale)
+        ELSE
+          Norm = SQRT(Norm/nscale)
         END IF
       CASE DEFAULT
         DO i=1,NormDofs
@@ -9568,6 +9572,8 @@ END FUNCTION SearchNodeL
         END DO
         IF( Parallel ) THEN
           Norm = (ParallelReduction(Norm)/nscale)**(1.0d0/NormDim)
+        ELSE
+          Norm = (Norm/nscale)**(1.0d0/NormDim)
         END IF
       END SELECT
     ELSE IF( ConsistentNorm ) THEN
@@ -9665,7 +9671,7 @@ END FUNCTION SearchNodeL
       CASE(2)
         Norm = SQRT(SUM(x(1:n)**2)/n)
       CASE DEFAULT
-        Norm = (SUM((x(1:n)**NormDim)/nscale))**(1.0_dp/NormDim)
+        Norm = (SUM((x(1:n)**NormDim)/n))**(1.0_dp/NormDim)
       END SELECT
     END IF
 
@@ -19046,6 +19052,7 @@ CONTAINS
      ApplyMortar = ListGetLogical(Solver % Values,'Apply Mortar BCs',Found) 
      ApplyContact = ListGetLogical(Solver % Values,'Apply Contact BCs',Found) 
      StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic Projector', Found)
+     IF(.NOT. Found ) StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic Solution', Found)
      PSolver => Solver
      
      
@@ -20399,16 +20406,18 @@ CONTAINS
      LOGICAL :: Found
      TYPE(Variable_t), POINTER :: v
      TYPE(Matrix_t), POINTER :: A     
-     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), PeriodicMult(:,:), PeriodicNrm(:), dx(:), dy(:)
+     REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), PeriodicMult(:,:), PeriodicNrm(:), &
+         PeriodicChange(:), dx(:), dy(:)
      REAL(KIND=dp), POINTER :: x(:), y(:)
-     INTEGER :: n, m, Ncycle, Ntime, Nguess, Nstore, GuessMode
-     LOGICAL :: DoGuess, ExportMult, ParallelTime
+     INTEGER :: n, m, Ncycle, Ntime, Nguess, Nstore, GuessMode, Nconv = 0
+     LOGICAL :: DoGuess, ExportMult, ParallelTime, PeriodicConv = .FALSE.
      TYPE(Variable_t), POINTER :: Var
      CHARACTER(LEN=MAX_NAME_LEN) :: MultName
-     REAL(KIND=dp) :: Relax
+     REAL(KIND=dp) :: Relax, AveErr, Tol
      
      
-     SAVE PeriodicSol, dx, PeriodicNrm, PeriodicMult, dy
+     SAVE PeriodicSol, dx, PeriodicNrm, PeriodicChange, PeriodicMult, dy, &
+         Nconv, PeriodicConv
 
      CALL Info('StoreCyclicSolution','Saving restoring cyclic solution!',Level=7)
 
@@ -20461,9 +20470,10 @@ CONTAINS
        ! allocate stuff to save vectors
        IF(.NOT. ALLOCATED( PeriodicSol ) ) THEN
          CALL Info('StoreCyclicSolution','Allocating for periodic solver values',Level=6)
-         ALLOCATE( PeriodicSol(n,Ncycle), PeriodicNrm(n), dx(n) )
+         ALLOCATE( PeriodicSol(n,Ncycle), PeriodicNrm(n), PeriodicChange(n), dx(n) )
          PeriodicSol = 0.0_dp
          PeriodicNrm = 0.0_dp
+         PeriodicChange = 0.0_dp
          
          IF( ExportMult ) THEN
            CALL Info('StoreCyclicSolution','Allocating for periodic Lagrange values',Level=6)
@@ -20496,6 +20506,7 @@ CONTAINS
      
      PeriodicSol(:,Nstore) = x
      PeriodicNrm(Nstore) = Solver % Variable % Norm
+     PeriodicChange(Nstore) = Solver % Variable % NonlinChange
      
      IF( ExportMult ) THEN
        PeriodicMult(:,Nstore) = y
@@ -20521,6 +20532,36 @@ CONTAINS
        END IF
      END IF
 
+     IF( Ntime > 2 * Ncycle ) THEN
+       AveErr = SUM( PeriodicChange ) / Ncycle
+       WRITE(Message,'(A,ES12.3)') 'Average cyclic error: ',AveErr
+       CALL Info('StoreCyclicSolution',Message )
+
+       IF( ParEnv % PEs > 1 ) THEN
+         AveErr = ParallelReduction( AveErr ) / ParEnv % PEs
+         WRITE(Message,'(A,ES12.3)') 'Parallel cyclic error: ',AveErr
+         CALL Info('StoreCyclicSolution',Message )        
+       END IF
+
+       Tol = ListGetCReal( CurrentModel % Simulation,'Cyclic System Convergence Tolerance')
+       
+       IF( PeriodicConv ) THEN
+         Nconv = Nconv + 1
+         IF( Nconv == Ncycle ) THEN
+           V => VariableGet( Solver % Mesh % Variables, 'Finish' )
+           V % Values = 1.0_dp  
+         END IF
+       ELSE IF( AveErr < Tol ) THEN
+         PeriodicConv = .TRUE.
+         CALL Info('StoreCyclicSolution','Cyclic convergence reached: '//TRIM(I2S(Ntime)))         
+         V => VariableGet( Solver % Mesh % Variables, 'Produce' )
+         V % Values = 1.0_dp
+       END IF
+
+       
+     END IF
+       
+     
    CONTAINS
 
      SUBROUTINE CommunicateCyclicSolution()
