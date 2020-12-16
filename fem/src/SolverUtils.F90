@@ -567,27 +567,40 @@ CONTAINS
 !------------------------------------------------------------------------------
 
 
-!> Create a copy of the linear system (Values,Rhs) to (BulkValues,BulkRhs).
+!> Create a copy of the matrix entries A % Values to A % BulkValues. 
+!> Optionally the entries of the RHS vector, the mass matrix and the damping matrix
+!> may also be copied. The RHS vector is copied by default, while the mass and
+!> damping matrices are copied only if asked. 
 !------------------------------------------------------------------------------
-   SUBROUTINE CopyBulkMatrix( A, BulkMass, BulkDamp )
+   SUBROUTINE CopyBulkMatrix( A, BulkMass, BulkDamp, BulkRHS )
 !------------------------------------------------------------------------------
      TYPE(Matrix_t) :: A
+     LOGICAL, OPTIONAL :: BulkMass, BulkDamp, BulkRHS
+
      INTEGER :: i,n
-     LOGICAL, OPTIONAL :: BulkMass, BulkDamp
+     LOGICAL :: CopyRHS
+
+     IF (PRESENT(BulkRHS)) THEN
+       CopyRHS = BulkRHS
+     ELSE
+       CopyRHS = .TRUE.
+     END IF
      
-     n = SIZE( A % Rhs )
-     IF( ASSOCIATED( A % BulkRhs ) ) THEN
-       IF( SIZE( A % BulkRhs ) /= n ) THEN
-          DEALLOCATE( A % BulkRhs ) 
-          A % BulkRHS => NULL()
+     IF (CopyRHS) THEN
+       n = SIZE( A % Rhs )
+       IF( ASSOCIATED( A % BulkRhs ) ) THEN
+         IF( SIZE( A % BulkRhs ) /= n ) THEN
+           DEALLOCATE( A % BulkRhs ) 
+           A % BulkRHS => NULL()
+         END IF
        END IF
+       IF ( .NOT. ASSOCIATED( A % BulkRHS ) ) THEN
+         ALLOCATE( A % BulkRHS( n ) )
+       END IF
+       DO i=1,n
+         A % BulkRHS(i) = A % Rhs(i)
+       END DO
      END IF
-     IF ( .NOT. ASSOCIATED( A % BulkRHS ) ) THEN
-       ALLOCATE( A % BulkRHS( n ) )
-     END IF
-     DO i=1,n
-       A % BulkRHS(i) = A % Rhs(i)
-    END DO
      
      n = SIZE( A % Values )
      IF( ASSOCIATED( A % BulkValues ) ) THEN
@@ -646,7 +659,8 @@ CONTAINS
 !------------------------------------------------------------------------------
 
 
-!> Restores the saved bulk after
+!> Restores the RHS vector and the stiffness, mass and damping matrices by
+!> using the data objects A % Bulk* of the argument A
 !------------------------------------------------------------------------------
    SUBROUTINE RestoreBulkMatrix( A )
 !------------------------------------------------------------------------------
@@ -12486,7 +12500,7 @@ END FUNCTION SearchNodeL
     END DO
     !$OMP END DO NOWAIT
     
-#if 0
+#if 1
     IF ( ASSOCIATED( A % PrecValues ) ) THEN
       IF (SIZE(A % Values) == SIZE(A % PrecValues)) THEN
         !$OMP DO
