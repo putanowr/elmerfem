@@ -12052,7 +12052,7 @@ END FUNCTION SearchNodeL
 
     n = A % NumberOfRows
 
-    Parallel = ( ParEnv % PEs > 1 .AND. .NOT. Solver % Mesh % SingleMesh ) 
+    Parallel = ( ParEnv % PEs > 1) .AND. (.NOT. Solver % Mesh % SingleMesh ) 
     
     CALL Info('ScaleLinearSystem','Scaling diagonal entries to unity',Level=10)
 
@@ -19052,7 +19052,7 @@ CONTAINS
      ApplyMortar = ListGetLogical(Solver % Values,'Apply Mortar BCs',Found) 
      ApplyContact = ListGetLogical(Solver % Values,'Apply Contact BCs',Found) 
      StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic Projector', Found)
-     IF(.NOT. Found ) StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic Solution', Found)
+     IF(.NOT. Found ) StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic System', Found)
      PSolver => Solver
      
      
@@ -20413,7 +20413,7 @@ CONTAINS
      LOGICAL :: DoGuess, ExportMult, ParallelTime, PeriodicConv = .FALSE.
      TYPE(Variable_t), POINTER :: Var
      CHARACTER(LEN=MAX_NAME_LEN) :: MultName
-     REAL(KIND=dp) :: Relax, AveErr, Tol
+     REAL(KIND=dp) :: Relax, AveErr, AveNrm, Tol
      
      
      SAVE PeriodicSol, dx, PeriodicNrm, PeriodicChange, PeriodicMult, dy, &
@@ -20428,7 +20428,11 @@ CONTAINS
      IF( NINT(v % Values(1)) > 1 ) RETURN
 
      Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
+     IF( ListGetLogical( Model % Simulation,'Parallel Timestepping',Found ) ) THEN
+       Ncycle = Ncycle / ParEnv % PEs
+     END IF
 
+     
      v => VariableGet( Solver % Mesh % Variables, 'timestep' )
      Ntime = NINT(v % Values(1))
 
@@ -20532,33 +20536,48 @@ CONTAINS
        END IF
      END IF
 
+     ! We have to go at least two cycles to deduce that we have converged.
+     ! After having converged the third one is used for producing the results.
+     !------------------------------------------------------------------------
      IF( Ntime > 2 * Ncycle ) THEN
        AveErr = SUM( PeriodicChange ) / Ncycle
-       WRITE(Message,'(A,ES12.3)') 'Average cyclic error: ',AveErr
+       WRITE(Message,'(A,ES12.5)') 'Average cyclic error '//TRIM(I2S(Ntime))//': ',AveErr
        CALL Info('StoreCyclicSolution',Message )
 
+       AveNrm = SUM( PeriodicNrm ) / Ncycle
+       WRITE(Message,'(A,ES12.5)') 'Average cyclic norm '//TRIM(I2S(Ntime))//': ',AveNrm
+       CALL Info('StoreCyclicSolution',Message )
+            
        IF( ParEnv % PEs > 1 ) THEN
          AveErr = ParallelReduction( AveErr ) / ParEnv % PEs
-         WRITE(Message,'(A,ES12.3)') 'Parallel cyclic error: ',AveErr
+         WRITE(Message,'(A,ES12.5)') 'Parallel cyclic error '//TRIM(I2S(Ntime))//': ',AveErr
+         CALL Info('StoreCyclicSolution',Message )        
+         
+         AveNrm = ParallelReduction( AveNrm ) / ParEnv % PEs
+         WRITE(Message,'(A,ES12.5)') 'Parallel cyclic norm '//TRIM(I2S(Ntime))//': ',AveNrm
          CALL Info('StoreCyclicSolution',Message )        
        END IF
-
-       Tol = ListGetCReal( CurrentModel % Simulation,'Cyclic System Convergence Tolerance')
-       
-       IF( PeriodicConv ) THEN
-         Nconv = Nconv + 1
-         IF( Nconv == Ncycle ) THEN
-           V => VariableGet( Solver % Mesh % Variables, 'Finish' )
-           V % Values = 1.0_dp  
+         
+       Tol = ListGetCReal( Solver % Values,'Cyclic System Convergence Tolerance',Found)
+       IF( Found ) THEN
+         ! We want to start production from the 1st periodic timestep.
+         IF( Nguess == 1 .AND. AveErr < Tol ) THEN
+           PeriodicConv = .TRUE.
+           CALL Info('StoreCyclicSolution','Cyclic convergence reached: '//TRIM(I2S(Ntime)),Level=4)         
+           ! Set marker to postprocessing solvers.
+           V => VariableGet( Solver % Mesh % Variables, 'Produce' )
+           V % Values = 1.0_dp
          END IF
-       ELSE IF( AveErr < Tol ) THEN
-         PeriodicConv = .TRUE.
-         CALL Info('StoreCyclicSolution','Cyclic convergence reached: '//TRIM(I2S(Ntime)))         
-         V => VariableGet( Solver % Mesh % Variables, 'Produce' )
-         V % Values = 1.0_dp
-       END IF
 
-       
+         ! Update counter if this is a converged solution.
+         IF( PeriodicConv ) THEN
+           Nconv = Nconv + 1
+           IF( Nconv == Ncycle ) THEN
+             V => VariableGet( Solver % Mesh % Variables, 'Finish' )
+             V % Values = 1.0_dp  
+           END IF
+         END IF
+       END IF
      END IF
        
      
@@ -20633,6 +20652,9 @@ CONTAINS
      
      Model => CurrentModel 
      Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
+     IF( ListGetLogical( Model % Simulation,'Parallel Timestepping',Found ) ) THEN
+       Ncycle = Ncycle / ParEnv % PEs
+     END IF
      
      v => VariableGet( Solver % Mesh % Variables, 'timestep' )
      Ntime = NINT(v % Values(1))

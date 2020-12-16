@@ -604,7 +604,7 @@ END INTERFACE
        IF(.NOT. Found ) RETURN
 
        IF(ExtrudeLayers < 2) THEN
-         CALL Fatal('CreateExtrudedMesh','There must be at least two layers!')
+         CALL Fatal('ElmerSolver','There must be at least two "Extruded Mesh Layers"!')
        END IF
 
        ExtrudedMeshName = GetString(CurrentModel % Simulation,'Extruded Mesh Name',Found)
@@ -647,9 +647,20 @@ END INTERFACE
              'Timestep Intervals', GotIt )
 
          IF ( .NOT.GotIt ) THEN
-           CALL Fatal( ' ', 'Keyword > Timestep Intervals < MUST be ' //  &
+           CALL Fatal('ElmerSolver', 'Keyword > Timestep Intervals < MUST be ' //  &
                'defined for transient and scanning simulations' )
          END IF
+
+         IF( ListGetLogical( CurrentModel % Simulation,'Parallel Timestepping',GotIt ) ) THEN
+           DO i=1,SIZE(Timesteps,1)
+             IF( MODULO( Timesteps(i), ParEnv % PEs ) /= 0 ) THEN
+               CALL Fatal('ElmerSolver','"Timestep Intervals" should be divisible by #np')
+             END IF
+             Timesteps(i) = Timesteps(i) / ParEnv % PEs
+           END DO
+           CALL Info('ElmerSolver','Divided timestep intervals equally for each partition!',Level=4)
+         END IF
+         
          TimestepSizes => ListGetConstRealArray( CurrentModel % Simulation, &
              'Timestep Sizes', GotIt )
          IF ( .NOT.GotIt ) THEN
@@ -657,7 +668,7 @@ END INTERFACE
              ALLOCATE(TimestepSizes(SIZE(Timesteps),1))
              TimestepSizes = 1.0_dp
            ELSE
-             CALL Fatal( ' ', 'Keyword [Timestep Sizes] MUST be ' //  &
+             CALL Fatal( 'ElmerSolver', 'Keyword [Timestep Sizes] MUST be ' //  &
                  'defined for time dependent simulations' )
            END IF
          END IF
@@ -2148,6 +2159,12 @@ END INTERFACE
          .AND. ( ParEnv % PEs > 1 ) 
      nPeriodic = ListGetInteger( CurrentModel % Simulation,'Periodic Timesteps',GotIt )
      IF( ParallelTime ) THEN
+       IF( MODULO( nPeriodic, ParEnv % PEs ) /= 0 ) THEN
+         CALL Fatal('ExecSimulation','For parallel timestepping "Periodic Timesteps" must be divisible by #np')
+       END IF
+       nPeriodic = nPeriodic / ParEnv % PEs
+     END IF
+     IF( ParallelTime ) THEN
        IF( nPeriodic == 0 ) THEN
          CALL Fatal('ExecSimulation','Parallel timestepping requires "Periodic Timesteps"')
        END IF
@@ -2173,6 +2190,7 @@ END INTERFACE
        END IF
 
        RealTimestep = 1
+              
        DO timestep = 1,Timesteps(interval)
          
          cum_Timestep = cum_Timestep + 1
@@ -2672,26 +2690,31 @@ END INTERFACE
 
          maxtime = ListGetCReal( CurrentModel % Simulation,'Real Time Max',GotIt)
          IF( GotIt .AND. RealTime() - RT0 > maxtime ) THEN
-            CALL Info('ElmerSolver','Reached allowed maximum real time, exiting...')
+            CALL Info('ElmerSolver','Reached allowed maximum real time, exiting...',Level=3)
             GOTO 100
          END IF
 
 	 exitcond = ListGetCReal( CurrentModel % Simulation,'Exit Condition',GotIt)
 	 IF( GotIt .AND. exitcond > 0.0_dp ) THEN
-            CALL Info('ElmerSolver','Found a positive exit condition, exiting...')
+            CALL Info('ElmerSolver','Found a positive exit condition, exiting...',Level=3)
             GOTO 100
          END IF
-	 
+
+         IF( sFinish(1) > 0.0_dp ) THEN
+           CALL Info('ElmerSolver','Finishing condition "finish" found to be positive, exiting...',Level=3)
+           GOTO 100
+         END IF
+           
 !------------------------------------------------------------------------------
 
          IF ( SteadyStateReached .AND. .NOT. (Transient .OR. Scanning) ) THEN
             IF ( Timestep >= CoupledMinIter ) EXIT
          END IF
-
+         
 !------------------------------------------------------------------------------
        END DO ! timestep within an iterval
 !------------------------------------------------------------------------------
-
+       
 !------------------------------------------------------------------------------
      END DO ! timestep intervals, i.e. the simulation
 !------------------------------------------------------------------------------
