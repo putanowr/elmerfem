@@ -13298,15 +13298,24 @@ END FUNCTION SearchNodeL
       CALL Info('SolveLinearSystem','Assuming real valued linear system',Level=8)
     END IF
 
-    Parallel = ( ParEnv % Pes>1 ) .AND. ( ASSOCIATED(A % ParMatrix) )
-    
+    Parallel = ( ParEnv % Pes>1 ) .AND. ( .NOT. Solver % Mesh % SingleMesh )
+
 !------------------------------------------------------------------------------
 !   If parallel execution, check for parallel matrix initializations
 !------------------------------------------------------------------------------
-    IF ( Parallel ) THEN
-      CALL ParallelInitMatrix( Solver, A )
+    IF ( Parallel  ) THEN
+      IF( .NOT. ASSOCIATED(A % ParMatrix) ) THEN
+        CALL ParallelInitMatrix( Solver, A )
+      END IF      
+      Parallel = ASSOCIATED(A % ParMatrix)       
     END IF
 
+    IF( Parallel ) THEN
+      CALL Info('SolveLinearSystem','Assuming parallel linear system',Level=6)
+    ELSE
+      CALL Info('SolveLinearSystem','Assuming serial linear system',Level=8)
+    END IF  
+        
     IF ( ListGetLogical( Solver % Values, 'Linear System Save',GotIt )) THEN
       saveslot = ListGetString( Solver % Values,'Linear System Save Slot', GotIt )
       IF(SaveSlot == 'linear solve') CALL SaveLinearSystem( Solver, A )
