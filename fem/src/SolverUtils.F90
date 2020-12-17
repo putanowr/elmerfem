@@ -9480,7 +9480,7 @@ END FUNCTION SearchNodeL
     LOGICAL :: Parallel
     
     CALL Info('ComputeNorm','Computing norm of solution',Level=10)
-
+    
     IF(PRESENT(values)) THEN
       x => values
     ELSE
@@ -9515,7 +9515,7 @@ END FUNCTION SearchNodeL
  
     n = nin
     totn = 0
-
+    
     IF( Parallel ) THEN
       ConsistentNorm = ListGetLogical(Solver % Values,'Nonlinear System Consistent Norm',Stat)
       IF (ConsistentNorm) CALL Info('ComputeNorm','Using consistent norm in parallel',Level=10)
@@ -9525,7 +9525,7 @@ END FUNCTION SearchNodeL
 
 
     PermStart = ListGetInteger(Solver % Values,'Norm Permutation',Stat)
-    IF ( Stat ) THEN
+    IF ( Stat .AND. PermStart > 1 ) THEN
       ALLOCATE(iPerm(SIZE(Solver % Variable % Perm))); iPerm=0
       n = 0
       DO i=PermStart,SIZE(iPerm)
@@ -9534,13 +9534,13 @@ END FUNCTION SearchNodeL
           iPerm(n) = Solver % Variable % Perm(i)
         END IF
       END DO
+      
       ALLOCATE(y(n))
       y = x(iPerm(1:n))
       x => y
       DEALLOCATE(iPerm)
     END IF
-
-
+    
     IF( NormDofs < Dofs ) THEN
       IF( ConsistentNorm ) THEN
         CALL Warn('ComputeNorm','Consistent norm not implemented for selective norm')
@@ -9688,8 +9688,6 @@ END FUNCTION SearchNodeL
         Norm = (SUM((x(1:n)**NormDim)/n))**(1.0_dp/NormDim)
       END SELECT
     END IF
-
-!   PRINT *,'ComputedNorm:',Norm, NormDIm
     
     IF( ComponentsAllocated ) THEN
       DEALLOCATE( NormComponents ) 
@@ -10001,7 +9999,7 @@ END FUNCTION SearchNodeL
     ELSE
       PrevNorm = Solver % Variable % Norm
     END IF
-
+    
     Norm = ComputeNorm(Solver, n, x)
     Solver % Variable % Norm = Norm
     
