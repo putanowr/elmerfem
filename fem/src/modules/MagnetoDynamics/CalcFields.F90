@@ -488,9 +488,11 @@ SUBROUTINE MagnetoDynamicsCalcFields_Init(Model,Solver,dt,Transient)
       END IF
     END IF
 
-    IF( ListGetLogicalAnyComponent(Model,'Calculate Magnetic Force') .OR. &
+    DoIt = ListGetLogicalAnyComponent(Model,'Calculate Magnetic Force') .OR. &
         ListGetLogicalAnyComponent(Model,'Calculate Magnetic Torque') .OR. &
-        GetLogical( SolverParams,'Calculate Nodal Forces', Found) ) THEN
+        GetLogical( SolverParams,'Calculate Nodal Forces', Found)
+    IF( DoIt ) THEN
+      i = i + 1
       CALL ListAddString( SolverParams, "Exported Variable "//TRIM(i2s(i)), &
           "-dg Nodal Force E[Nodal Force E:"//TRIM(I2S(fdim))//"]" )
     END IF
