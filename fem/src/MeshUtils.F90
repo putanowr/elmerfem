@@ -11443,6 +11443,9 @@ CONTAINS
       ! to the angle. This may depende on time etc. 
       IF( k == 1 ) THEN
         DegOffset = ListGetCReal(BParams,'Rotational Projector Angle Offset',SetDegOffset ) 
+        IF(.NOT. SetDegOffset ) THEN
+          DegOffset = ListGetCReal(BParams,'Mesh Rotate 3',SetDegOffset )          
+        END IF
       ELSE
         SetDegOffset = .FALSE.
       END IF

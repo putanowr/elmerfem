@@ -20582,11 +20582,8 @@ CONTAINS
          IF( Nguess == 1 .AND. AveErr < Tol ) THEN
            PeriodicConv = .TRUE.
            CALL Info(Caller,'Cyclic convergence reached at step: '//TRIM(I2S(Ntime)),Level=4)         
-
-           IF( ParallelTime ) THEN
-             CALL Info(Caller,'Cyclic convergence reached parallel step: '&
-                 //TRIM(I2S(ParEnv % PEs * Ntime)),Level=4)         
-           END IF
+           m = NINT( 1.0_dp * Ntime / Ncycle ) 
+           CALL Info(Caller,'Cyclic convergence reached at cycle: '//TRIM(I2S(m)),Level=4)         
            
            ! Set marker to postprocessing solvers.
            V => VariableGet( Solver % Mesh % Variables, 'Produce' )
