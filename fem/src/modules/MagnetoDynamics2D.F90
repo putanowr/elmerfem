@@ -282,7 +282,8 @@ CONTAINS
 
 
   !> Tabulate basis functions and their weights so that we do not need to compute them in the assembly
-  !> process. This assumes that the geometry is not changing.
+  !> process. This assumes that the geometry is not changing. This could be later moved to library
+  !> but for now we use a local implementation. 
   !---------------------------------------------------------------------------------------------------
   SUBROUTINE TabulateBasisFunctions()
 
@@ -369,7 +370,8 @@ CONTAINS
 !------------------------------------------------------------------------------
 
    CALL Info(Caller,'Calculating lumped parameters',Level=8)
-   
+
+   ! Define whether we have something to compute
    CalcTorque = ListCheckPresentAnyBody( Model,'r inner')
    CalcPot = ListGetLogicalAnyBodyForce( Model,'Calculate Potential' )
    CalcInert = CalcTorque .AND. .NOT. Visited 
@@ -447,8 +449,10 @@ CONTAINS
          CALL GetLocalSolution(POT, UElement=Element)
        END IF
      END IF
-     
+
+     ! Only treat the element if we have something to compute
      IF( .NOT. (ThisPot .OR. ThisInert .OR. ThisTorque ) ) THEN
+       ! If nothing to compute still update the counter for IP points
        IF( BasisFunctionsInUse ) THEN
          IP = GaussPoints(Element)
          tind = tind + IP % n
@@ -474,6 +478,7 @@ CONTAINS
          dBasisdx => BasisFunctionsAtIp(tind) % dBasisdx        
          Weight = BasisFunctionsAtIp(tind) % Weight 
        ELSE IF( ThisTorque ) THEN
+         ! Only torque needs the derivatives of basis function
          stat = ElementInfo( Element, Nodes, IP % U(t), IP % V(t), &
              IP % W(t), detJ, Basis, dBasisdx )
          weight = IP % s(t) * detJ
@@ -482,7 +487,8 @@ CONTAINS
              IP % W(t), detJ, Basis )
          weight = IP % s(t) * detJ
        END IF
-              
+
+       ! Coordinates of the intergration point
        x = SUM(Nodes % x(1:nd)*Basis(1:nd))
        y = SUM(Nodes % y(1:nd)*Basis(1:nd))
        r = SQRT(x**2+y**2)
@@ -515,7 +521,10 @@ CONTAINS
      END DO
    END DO
      
-       
+
+   ! Finally perform parallel reduction if needed, and
+   ! store the results for saving by SaveScalars.
+   !-------------------------------------------------------------------------   
    IF( CalcPot ) THEN
      IF( Parallel ) THEN
        DO i=1,nbf
@@ -533,7 +542,6 @@ CONTAINS
      END DO
    END IF
    
-     
    IF( CalcTorque ) THEN   
      IF( Parallel ) THEN
        Torq = ParallelReduction(Torq)
@@ -705,7 +713,6 @@ CONTAINS
         END SELECT
       END IF
     END IF
-
 
     
     !Numerical integration:
@@ -1045,7 +1052,6 @@ CONTAINS
   END SUBROUTINE LocalMatrixHandles
 !------------------------------------------------------------------------------
 
-
   
 !-------------------------------------------------------------------------------
 ! Calculates H and dHdB in 2D given B. This should be always inlined in LocalMatrix.
@@ -1180,11 +1186,10 @@ END SUBROUTINE ! }}}
     STIFF = 0._dp
     FORCE = 0._dp
 
-    AirGapLength=GetConstReal( BC, 'Air Gap Length', Found)
-    if (.not. Found) CALL FATAL('LocalMatrixAirGapBC', 'Air Gap Length not found!')
+    AirGapLength = ListGetConstReal( BC, 'Air Gap Length', UnfoundFatal = .TRUE.)
 
-    AirGapMu=GetConstReal( BC, 'Air Gap Relative Permeability', Found)
-    if (.not. Found) AirGapMu=1d0
+    AirGapMu = ListGetConstReal( BC, 'Air Gap Relative Permeability', Found)
+    IF (.NOT. Found) AirGapMu=1.0_dp
 
     !Numerical integration:
     !----------------------
@@ -2513,14 +2518,14 @@ CONTAINS
     REAL(KIND=dp), ALLOCATABLE :: Basis(:), dBasisdx(:,:)
     REAL(KIND=dp), ALLOCATABLE :: Cond(:), mu(:)
     REAL(KIND=dp), ALLOCATABLE :: BodyLoss(:), BodyComplexPower(:,:), BodyCurrent(:,:), &
-                                  CirCompComplexPower(:,:), CirCompCurrent(:,:), &
-                                  BodyLorentzForcesRe(:,:), BodyLorentzForcesIm(:,:), &
-                                  ComponentLorenzForcesRe(:,:), ComponentLorenzForcesIm(:,:)
+        CirCompComplexPower(:,:), CirCompCurrent(:,:), &
+        BodyLorentzForcesRe(:,:), BodyLorentzForcesIm(:,:), &
+        ComponentLorenzForcesRe(:,:), ComponentLorenzForcesIm(:,:)
     COMPLEX(KIND=dp) :: cmplx_power 
     REAL(KIND=dp), ALLOCATABLE :: BodyVolumes(:), BodyAvBim(:,:), BodyAvBre(:,:), &
-                                  BodySkinCond(:,:), BodyProxNu(:,:), &
-                                  CirCompVolumes(:), CirCompAvBim(:,:), CirCompAvBre(:,:), &
-                                  CirCompSkinCond(:,:), CirCompProxNu(:,:) 
+        BodySkinCond(:,:), BodyProxNu(:,:), &
+        CirCompVolumes(:), CirCompAvBim(:,:), CirCompAvBre(:,:), &
+        CirCompSkinCond(:,:), CirCompProxNu(:,:) 
     LOGICAL, ALLOCATABLE :: BodyAverageBCompute(:)
 
     REAL(KIND=dp), ALLOCATABLE :: alpha(:)
@@ -2535,14 +2540,14 @@ CONTAINS
     REAL(KIND=DP) :: grads_coeff, nofturns
     REAL(KIND=DP) :: i_multiplier_re, i_multiplier_im, ModelDepth
     COMPLEX(KIND=dp) :: i_multiplier, Bx, By, Jz, LorentzForceDensX, &
-                        LorentzForceDensY
+        LorentzForceDensY
     REAL(KIND=dp) :: ValueNorm
 
     INTEGER :: NofComponents=0, bid
     INTEGER, POINTER :: BodyIds(:)
     REAL(KIND=DP) :: Vol
     CHARACTER(LEN=MAX_NAME_LEN) :: CompNumber, OutputComp
-    
+
     LOGICAL :: StrandedHomogenization, FoundIm, StrandedCoil 
 
     REAL(KIND=dp), ALLOCATABLE :: sigma_33(:), sigmaim_33(:)
@@ -2551,8 +2556,8 @@ CONTAINS
 
     LOGICAL :: LaminateModelPowerCompute=.FALSE., InPlaneProximity=.FALSE.
     REAL(KIND=dp) :: LaminatePowerDensity, BMagnAtIP, Fsk, Lambda, LaminateThickness, &
-                     mu0=4d-7*PI, skindepth
-    
+        mu0=4d-7*PI, skindepth
+
     LOGICAL :: BertottiCompute = .FALSE., LossUDF = .FALSE.
     REAL(KIND=dp) :: BertottiLoss, BRTc1, BRTc2, BRTc3, BRTc4, BRTc5
 
@@ -2591,9 +2596,9 @@ CONTAINS
       CALL ListAddConstReal( Model % Simulation, 'res: Angular Frequency', Omega)
       NofComponents = SIZE(Model % Components)
       ALLOCATE(BodySkinCond(2, Model % NumberOfBodies), &
-                 BodyProxNu(2, Model % NumberOfBodies), &
-                 CirCompSkinCond(2, Model % NumberOfBodies), &
-                 CirCompProxNu(2, Model % NumberOfBodies))
+          BodyProxNu(2, Model % NumberOfBodies), &
+          CirCompSkinCond(2, Model % NumberOfBodies), &
+          CirCompProxNu(2, Model % NumberOfBodies))
       BodySkinCond = 0.0_dp
       BodyProxNu = 0.0_dp      
       CirCompSkinCond = 0.0_dp
@@ -2606,7 +2611,7 @@ CONTAINS
     IF ( ComplexPowerCompute ) THEN
       NofComponents = SIZE(Model % Components)
       ALLOCATE( BodyComplexPower(2,Model % NumberOfBodies), &
-                CirCompComplexPower(2, NofComponents ) )
+          CirCompComplexPower(2, NofComponents ) )
       BodyComplexPower = 0.0_dp
       CirCompComplexPower = 0.0_dp
     END IF
@@ -2634,11 +2639,11 @@ CONTAINS
     IF ( AverageBCompute ) THEN
       NofComponents = SIZE(Model % Components)
       ALLOCATE( BodyAvBre(2,Model % NumberOfBodies), &
-                BodyAvBim(2,Model % NumberOfBodies), &
-                BodyAverageBCompute(Model % NumberOfBodies), &
-                CirCompAvBre(2,NofComponents), &
-                CirCompAvBim(2,NofComponents) )
-              
+          BodyAvBim(2,Model % NumberOfBodies), &
+          BodyAverageBCompute(Model % NumberOfBodies), &
+          CirCompAvBre(2,NofComponents), &
+          CirCompAvBim(2,NofComponents) )
+
       BodyAvBre = 0._dp
       BodyAvBim = 0._dp
       BodyVolumesCompute = .TRUE.        
@@ -2647,7 +2652,8 @@ CONTAINS
       CirCompVolumesCompute = .TRUE.        
 
       DO i = 1, Model % NumberOfBodies
-        BodyAverageBCompute(i) = ListGetLogical(Model % Bodies(i) % Values, 'Compute Average Magnetic Flux Density', Found)
+        BodyAverageBCompute(i) = ListGetLogical(Model % Bodies(i) % Values,&
+            'Compute Average Magnetic Flux Density', Found)
         IF (.NOT. Found) BodyAverageBCompute(i) = .TRUE.
       END DO
     END IF 
@@ -2994,7 +3000,8 @@ CONTAINS
 
           imag_value = CMPLX(BatIp(1), BatIp(3), KIND=dp)
           imag_value2 = CMPLX(BatIp(2), BatIp(4), KIND=dp)
-          cmplx_power = cmplx_power + im * ModelDepth * Weight * Omega/MuAtIp * (ABS(imag_value)**2._dp+ABS(imag_value2)**2._dp)
+          cmplx_power = cmplx_power + im * ModelDepth * Weight * Omega/MuAtIp * &
+              (ABS(imag_value)**2._dp+ABS(imag_value2)**2._dp)
 
           IF (LaminateModelPowerCompute) cmplx_power = cmplx_power + ModelDepth * Weight * LaminatePowerDensity
 
@@ -3088,8 +3095,6 @@ CONTAINS
       
       TotalLoss = SUM( ComponentLoss )
       CALL ListAddConstReal( Model % Simulation,'res: fourier loss',TotalLoss )
-      !CALL ListAddConstReal( Model % Simulation,'res: cos mode fourier loss', ComponentLoss(1)) 
-      !CALL ListAddConstReal( Model % Simulation,'res: sin mode fourier loss', ComponentLoss(2))       
     
       !---------------------------------------------------------------------------------
       ! Screen output for componentwise and bodywise losses 

@@ -19072,6 +19072,8 @@ CONTAINS
           
      ApplyMortar = ListGetLogical(Solver % Values,'Apply Mortar BCs',Found) 
      ApplyContact = ListGetLogical(Solver % Values,'Apply Contact BCs',Found) 
+
+     ! Here we give the option to block out cyclic projector if not wanted. 
      StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic Projector', Found)
      IF(.NOT. Found ) StoreCyclic = ListGetLogical( Solver % Values,'Store Cyclic System', Found)
      PSolver => Solver
@@ -20435,12 +20437,13 @@ CONTAINS
      TYPE(Variable_t), POINTER :: Var
      CHARACTER(LEN=MAX_NAME_LEN) :: MultName
      REAL(KIND=dp) :: Relax, AveErr, AveNrm, Tol
+     CHARACTER(*), PARAMETER :: Caller = 'StoreCyclicSolution'
      
      
      SAVE PeriodicSol, dx, PeriodicNrm, PeriodicChange, PeriodicMult, dy, &
          Nconv, PeriodicConv
 
-     CALL Info('StoreCyclicSolution','Saving restoring cyclic solution!',Level=7)
+     CALL Info(Caller,'Saving restoring cyclic solution!',Level=7)
 
      
      Model => CurrentModel 
@@ -20449,10 +20452,11 @@ CONTAINS
      IF( NINT(v % Values(1)) > 1 ) RETURN
 
      Ncycle = ListGetInteger( Model % Simulation,'Periodic Timesteps')
-     IF( ListGetLogical( Model % Simulation,'Parallel Timestepping',Found ) ) THEN
+     ParallelTime = ListGetLogical( Model % Simulation,'Parallel Timestepping',Found ) .AND. &
+         ( ParEnv % PEs > 1 )
+     IF( ParallelTime ) THEN
        Ncycle = Ncycle / ParEnv % PEs
      END IF
-
      
      v => VariableGet( Solver % Mesh % Variables, 'timestep' )
      Ntime = NINT(v % Values(1))
@@ -20461,17 +20465,10 @@ CONTAINS
        ! Nothing to do before solution exists
        RETURN
      END IF
-     
-     
+          
      A => Solver % Matrix
-     n = A % NumberOfRows
-     
+     n = A % NumberOfRows     
      x => Solver % Variable % Values 
-
-
-     ParallelTime = ListGetLogical( CurrentModel % Simulation,'Parallel Timestepping',Found ) &
-         .AND. ( ParEnv % PEs > 1 )
-
 
      Relax = ListGetConstReal( Solver % Values,'Parallel Timestepping Relaxation Factor',Found ) 
      IF(.NOT. Found ) Relax = 1.0_dp
@@ -20494,14 +20491,14 @@ CONTAINS
      IF( Ntime == 2 ) THEN       
        ! allocate stuff to save vectors
        IF(.NOT. ALLOCATED( PeriodicSol ) ) THEN
-         CALL Info('StoreCyclicSolution','Allocating for periodic solver values',Level=6)
+         CALL Info(Caller,'Allocating for periodic solver values',Level=6)
          ALLOCATE( PeriodicSol(n,Ncycle), PeriodicNrm(n), PeriodicChange(n), dx(n) )
          PeriodicSol = 0.0_dp
          PeriodicNrm = 0.0_dp
          PeriodicChange = 0.0_dp
          
          IF( ExportMult ) THEN
-           CALL Info('StoreCyclicSolution','Allocating for periodic Lagrange values',Level=6)
+           CALL Info(Caller,'Allocating for periodic Lagrange values',Level=6)
            ALLOCATE( PeriodicMult(m,Ncycle), dy(m) )
            PeriodicMult = 0.0_dp
          END IF         
@@ -20514,7 +20511,7 @@ CONTAINS
      DoGuess = ( Ntime > Ncycle + 1 )        
      
      IF( NGuess == 1 .AND. ParallelTime ) THEN
-       CALL Info('StoreCyclicSolution','Performing parallel initial guess!')
+       CALL Info(Caller,'Performing parallel initial guess!')
        CALL CommunicateCyclicSolution()       
      END IF
 
@@ -20538,7 +20535,7 @@ CONTAINS
      END IF
      
      IF( DoGuess ) THEN
-       CALL Info('StoreCyclicSolution','Using values from previous cycle for initial guess!')
+       CALL Info(Caller,'Using values from previous cycle for initial guess!')
 
        IF( GuessMode < 0 ) THEN
          CONTINUE
@@ -20563,20 +20560,20 @@ CONTAINS
      IF( Ntime > 2 * Ncycle ) THEN
        AveErr = SUM( PeriodicChange ) / Ncycle
        WRITE(Message,'(A,ES12.5)') 'Average cyclic error '//TRIM(I2S(Ntime))//': ',AveErr
-       CALL Info('StoreCyclicSolution',Message )
+       CALL Info(Caller,Message )
 
        AveNrm = SUM( PeriodicNrm ) / Ncycle
        WRITE(Message,'(A,ES12.5)') 'Average cyclic norm '//TRIM(I2S(Ntime))//': ',AveNrm
-       CALL Info('StoreCyclicSolution',Message )
+       CALL Info(Caller,Message )
             
-       IF( ParEnv % PEs > 1 ) THEN
+       IF( ParallelTime ) THEN
          AveErr = ParallelReduction( AveErr ) / ParEnv % PEs
          WRITE(Message,'(A,ES12.5)') 'Parallel cyclic error '//TRIM(I2S(Ntime))//': ',AveErr
-         CALL Info('StoreCyclicSolution',Message )        
+         CALL Info(Caller,Message )        
          
          AveNrm = ParallelReduction( AveNrm ) / ParEnv % PEs
          WRITE(Message,'(A,ES12.5)') 'Parallel cyclic norm '//TRIM(I2S(Ntime))//': ',AveNrm
-         CALL Info('StoreCyclicSolution',Message )        
+         CALL Info(Caller,Message )        
        END IF
          
        Tol = ListGetCReal( Solver % Values,'Cyclic System Convergence Tolerance',Found)
@@ -20584,10 +20581,16 @@ CONTAINS
          ! We want to start production from the 1st periodic timestep.
          IF( Nguess == 1 .AND. AveErr < Tol ) THEN
            PeriodicConv = .TRUE.
-           CALL Info('StoreCyclicSolution','Cyclic convergence reached: '//TRIM(I2S(Ntime)),Level=4)         
+           CALL Info(Caller,'Cyclic convergence reached at step: '//TRIM(I2S(Ntime)),Level=4)         
+
+           IF( ParallelTime ) THEN
+             CALL Info(Caller,'Cyclic convergence reached parallel step: '&
+                 //TRIM(I2S(ParEnv % PEs * Ntime)),Level=4)         
+           END IF
+           
            ! Set marker to postprocessing solvers.
            V => VariableGet( Solver % Mesh % Variables, 'Produce' )
-           V % Values = 1.0_dp
+           V % Values = 1.0_dp   
          END IF
 
          ! Update counter if this is a converged solution.
@@ -20604,6 +20607,10 @@ CONTAINS
      
    CONTAINS
 
+     ! This routine is associated to parallel timestepping.
+     ! Here we communicate data among different periodic segments each
+     ! of which takes certain interval of the periodic system.
+     !--------------------------------------------------------------------------------
      SUBROUTINE CommunicateCyclicSolution()
        INTEGER :: toproc, fromproc
        INTEGER :: mpistat(MPI_STATUS_SIZE), ierr
@@ -20614,13 +20621,12 @@ CONTAINS
 
        VisitedTimes = VisitedTimes + 1
 
+       CALL Info(Caller,'Communicating data between time segments!',Level=5)
        
        ! Sent data forward in time.
        toproc = MODULO( ParEnv % MyPe + 1, ParEnv % PEs )
        fromproc = MODULO( ParEnv % MyPe - 1, ParEnv % PEs )
-
-       PRINT *,'Communicate in time:',ParEnv % MyPe, toproc, fromproc, n
-      
+            
        ALLOCATE( tovals(n), fromvals(n) )
 
        !PRINT *,'TimeError'//TRIM(I2S(ParEnv % Mype))//':',VisitedTimes, SUM(ABS(x-tovals))/SUM(ABS(x))
@@ -20634,15 +20640,12 @@ CONTAINS
        CALL MPI_RECV( fromvals, n, MPI_DOUBLE_PRECISION, &
            fromproc, 2005, MPI_COMM_WORLD, mpistat, ierr )
 
-       PRINT *,'Communication done:',ParEnv % MyPe
-
        Solver % Variable % PrevValues(:,1) = fromvals
 
        DEALLOCATE( tovals, fromvals ) 
 
      END SUBROUTINE CommunicateCyclicSolution
    
-
      
    END SUBROUTINE StoreCyclicSolution
    
