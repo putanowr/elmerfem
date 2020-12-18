@@ -2096,7 +2096,7 @@ END INTERFACE
      INTEGER :: interval, timestep, i, j, k, n
      REAL(KIND=dp) :: dt, ddt, dtfunc, timeleft
      INTEGER :: cum_timestep
-     INTEGER, SAVE ::  stepcount=0, RealTimestep
+     INTEGER, SAVE ::  stepcount, RealTimestep
      LOGICAL :: ExecThis,SteadyStateReached=.FALSE.,PredCorrControl, &
          DivergenceControl, HaveDivergence
      REAL(KIND=dp) :: CumTime, MaxErr, AdaptiveLimit, &
@@ -2145,7 +2145,8 @@ END INTERFACE
 
      AdaptiveTime = ListGetLogical( CurrentModel % Simulation, &
          'Adaptive Timestepping', GotIt )
-     
+
+     stepcount = 0
      DO interval = 1, TimeIntervals
         stepcount = stepcount + Timesteps(interval)
      END DO 
@@ -2369,8 +2370,8 @@ END INTERFACE
            CALL Info( 'MAIN', '-------------------------------------', Level=3 )
 
            IF ( Transient .OR. Scanning ) THEN
-             WRITE( Message, * ) 'Time: ',TRIM(i2s(cum_Timestep)),'/', &
-                   TRIM(i2s(stepcount)), sTime(1)
+             WRITE( Message,'(A,ES12.3)') 'Time: '//TRIM(i2s(cum_Timestep))//'/'// &
+                   TRIM(i2s(stepcount))//':', sTime(1)
              CALL Info( 'MAIN', Message, Level=3 )
 
              newtime= RealTime()

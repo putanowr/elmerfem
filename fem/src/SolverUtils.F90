@@ -20432,16 +20432,17 @@ CONTAINS
      REAL(KIND=dp), ALLOCATABLE :: PeriodicSol(:,:), PeriodicMult(:,:), PeriodicNrm(:), &
          PeriodicChange(:), dx(:), dy(:)
      REAL(KIND=dp), POINTER :: x(:), y(:)
-     INTEGER :: n, m, Ncycle, Ntime, Nguess, Nstore, GuessMode, Nconv = 0
-     LOGICAL :: DoGuess, ExportMult, ParallelTime, PeriodicConv = .FALSE.
+     INTEGER :: n, m, Ncycle, Ntime, Nguess, Nstore, GuessMode, Nconv, N1st 
+     LOGICAL :: ExportMult, ParallelTime, PeriodicConv
      TYPE(Variable_t), POINTER :: Var
      CHARACTER(LEN=MAX_NAME_LEN) :: MultName
      REAL(KIND=dp) :: Relax, AveErr, AveNrm, Tol
      CHARACTER(*), PARAMETER :: Caller = 'StoreCyclicSolution'
+     LOGICAL :: DoGuess = .FALSE.
      
      
      SAVE PeriodicSol, dx, PeriodicNrm, PeriodicChange, PeriodicMult, dy, &
-         Nconv, PeriodicConv
+         Nconv, PeriodicConv, DoGuess, N1st
 
      CALL Info(Caller,'Saving restoring cyclic solution!',Level=7)
 
@@ -20462,7 +20463,9 @@ CONTAINS
      Ntime = NINT(v % Values(1))
 
      IF( Ntime == 1 ) THEN
-       ! Nothing to do before solution exists
+       ! Nothing to do except initializations before solution exists
+       PeriodicConv = .FALSE.
+       NConv = 0
        RETURN
      END IF
           
@@ -20508,7 +20511,17 @@ CONTAINS
      ! Both should be in [1,Ncycle]
      Nstore = MODULO( Ntime-2,Ncycle)+1
      Nguess = MODULO( Ntime-1,Ncycle)+1              
-     DoGuess = ( Ntime > Ncycle + 1 )        
+
+     ! Only add guessing if the values have not been tabulated.
+     ! When we return for next "run" then we may use already tabulated values.  
+     IF(.NOT. DoGuess .AND. Ntime > Ncycle + 1 ) THEN
+       DoGuess = .TRUE.
+       N1st = Ntime
+     END IF
+       
+     ! This is the 1st iteration for which initial guess is provided.
+     ! If we are a returning customer let's keep the initial guess intact.
+     IF( DoGuess ) N1st = MIN( Ntime, N1st )
      
      IF( NGuess == 1 .AND. ParallelTime ) THEN
        CALL Info(Caller,'Performing parallel initial guess!')
@@ -20553,11 +20566,11 @@ CONTAINS
          Solver % Variable % Norm = PeriodicNrm(Nguess)
        END IF
      END IF
-
-     ! We have to go at least two cycles to deduce that we have converged.
+     
+     ! We have computed one full cycle to deduce we have converged.
      ! After having converged the third one is used for producing the results.
      !------------------------------------------------------------------------
-     IF( Ntime > 2 * Ncycle ) THEN
+     IF( Ntime > N1st + Ncycle ) THEN
        AveErr = SUM( PeriodicChange ) / Ncycle
        WRITE(Message,'(A,ES12.5)') 'Average cyclic error '//TRIM(I2S(Ntime))//': ',AveErr
        CALL Info(Caller,Message )
