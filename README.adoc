@@ -4,7 +4,7 @@ image::ElmerLogoPlain64x64.png[float="right"]
 == Elmer FEM
 
 
-This is the official source code repository for the Elmer FEM software suite.
+Ths is the clone of official Elmer repository - made just for doing some experimets on Elmer code.
 
 
 
